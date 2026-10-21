@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Pi Miner — security rules (Phase 1: wallets + Pi coin exchange)
+// Pi Miner — security rules (shared blockchain + wallets + Pi coin exchange)
 // Paste into Firebase Console → Firestore Database → Rules → Publish.
 //
 // The game runs on the free Spark plan with no server code, so these rules
@@ -22,28 +22,19 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if signedIn();
 
+      // Wallet set up at first sign-in, with $10,000 starting Cash
       allow create: if signedIn() && request.auth.uid == uid
         && validName(request.resource.data.displayName)
-        && (
-          // Wallet set up at first sign-in, with $10,000 starting Cash
-          (request.resource.data.keys().hasOnly(['displayName', 'coins', 'cash', 'batches', 'cashGranted', 'createdAt', 'lastBatchAt'])
-            && request.resource.data.coins == 0
-            && request.resource.data.batches == 0
-            && request.resource.data.cash == 1000000
-            && request.resource.data.cashGranted == true
-            && request.resource.data.createdAt == request.time
-            && request.resource.data.lastBatchAt == request.time)
-          ||
-          // First mining batch saved before the wallet existed
-          (request.resource.data.keys().hasOnly(['displayName', 'coins', 'batches', 'lastBatchAt', 'createdAt'])
-            && request.resource.data.coins == 50
-            && request.resource.data.batches == 1
-            && request.resource.data.lastBatchAt == request.time
-            && request.resource.data.createdAt == request.time)
-        );
+        && request.resource.data.keys().hasOnly(['displayName', 'coins', 'cash', 'batches', 'cashGranted', 'createdAt', 'lastBatchAt'])
+        && request.resource.data.coins == 0
+        && request.resource.data.batches == 0
+        && request.resource.data.cash == 1000000
+        && request.resource.data.cashGranted == true
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.lastBatchAt == request.time;
 
       allow update: if signedIn() && (
-        (request.auth.uid == uid && (miningBatch() || walletChange() || startingCash()))
+        (request.auth.uid == uid && (walletChange() || startingCash()))
         || (request.auth.uid != uid && creditOnly())
       );
 
@@ -53,6 +44,14 @@ service cloud.firestore {
       match /history/{entry} {
         allow read: if signedIn() && request.auth.uid == uid;
         allow create: if signedIn() && (
+          // A block this player mined (must exist on the chain, mined by them, same reward)
+          (request.auth.uid == uid
+            && request.resource.data.keys().hasOnly(['kind', 'height', 'reward', 'trades', 'at'])
+            && request.resource.data.kind == 'block'
+            && entry == 'block-' + string(request.resource.data.height)
+            && request.resource.data.at == request.time
+            && minedBy(request.resource.data.height, uid, request.resource.data.reward))
+          ||
           (request.auth.uid == uid && entry == 'starting-cash'
             && request.resource.data.kind == 'grant'
             && request.resource.data.amount == 1000000)
@@ -69,21 +68,12 @@ service cloud.firestore {
       }
     }
 
-    // A saved mining batch: exactly +50 Pi, at most once every 10 seconds
-    function miningBatch() {
-      return changed().hasOnly(['displayName', 'coins', 'batches', 'lastBatchAt'])
-        && validName(request.resource.data.displayName)
-        && request.resource.data.coins == resource.data.coins + 50
-        && request.resource.data.batches == resource.data.batches + 1
-        && request.resource.data.lastBatchAt == request.time
-        && request.time > resource.data.lastBatchAt + duration.value(10, 's');
-    }
-
-    // The owner trading or cancelling: balances stay whole and never go negative
+    // The owner trading, cancelling or collecting a block reward: balances stay whole and never go negative
     function walletChange() {
-      return changed().hasOnly(['cash', 'coins'])
+      return changed().hasOnly(['cash', 'coins', 'blocksMined'])
         && isCount(request.resource.data.get('cash', 0))
-        && isCount(request.resource.data.get('coins', 0));
+        && isCount(request.resource.data.get('coins', 0))
+        && isCount(request.resource.data.get('blocksMined', 0));
     }
 
     // One-time $10,000 for players whose wallet predates the exchange
@@ -151,7 +141,9 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Trades are permanent and must involve the player recording them
+    // Trades must involve the player recording them and start out pending (block: null).
+    // A miner later stamps the block number that confirmed them, once.
+    // (No lookups here: Firestore allows only 20 per transaction, and a block confirms up to 100 trades.)
     match /market/{asset}/trades/{id} {
       allow read: if signedIn();
       allow create: if signedIn()
@@ -159,8 +151,65 @@ service cloud.firestore {
         && request.resource.data.buyer != request.resource.data.seller
         && request.resource.data.price is int && request.resource.data.price > 0
         && request.resource.data.qty is int && request.resource.data.qty > 0
-        && request.resource.data.at == request.time;
+        && request.resource.data.at == request.time
+        && request.resource.data.block == null;
+      allow update: if signedIn()
+        && changed().hasOnly(['block'])
+        && resource.data.block == null
+        && request.resource.data.block is int && request.resource.data.block > 0;
+      allow delete: if false;
+    }
+
+    /* ---------------- Blockchain ---------------- */
+    function blockAfter(h) {
+      return getAfter(/databases/$(database)/documents/chain/$(string(h))).data;
+    }
+    function minedBy(h, uid, reward) {
+      let b = blockAfter(h);
+      return b.miner == uid && b.reward == reward;
+    }
+
+    // Blocks are append-only. A new block must become the tip in the same transaction.
+    match /chain/{height} {
+      allow read: if signedIn();
+      allow create: if signedIn() && newBlock(height);
       allow update, delete: if false;
+    }
+    function newBlock(height) {
+      let b = request.resource.data;
+      let tip = getAfter(/databases/$(database)/documents/meta/chain).data;
+      return b.keys().hasOnly(['height', 'hash', 'prevHash', 'timestamp', 'miner', 'minerName', 'nonce', 'reward', 'work', 'txRoot', 'txIds', 'at'])
+        && b.height is int && string(b.height) == height
+        && b.miner == request.auth.uid && validName(b.minerName)
+        && b.hash is string && b.hash.size() == 64
+        && b.prevHash is string && b.prevHash.size() == 64
+        && b.nonce is int && b.nonce >= 0
+        && b.reward is int && b.reward >= 0 && b.reward <= 50
+        && b.work is int && b.work > 0
+        && b.txIds is list && b.txIds.size() <= 100
+        && b.at == request.time
+        && tip.height == b.height && tip.hash == b.hash;
+    }
+
+    // The tip moves forward one block at a time, onto a block that links to the old tip
+    match /meta/chain {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && nextTip(0, '0000000000000000000000000000000000000000000000000000000000000000', 0);
+      allow update: if signedIn()
+        && nextTip(resource.data.height, resource.data.hash, resource.data.get('supply', 0));
+    }
+    function nextTip(prevHeight, prevHash, prevSupply) {
+      let t = request.resource.data;
+      let b = blockAfter(t.height);
+      return t.keys().hasOnly(['height', 'hash', 'timestamp', 'minerName', 'nextWork', 'supply', 'at'])
+        && t.height == prevHeight + 1
+        && t.hash == b.hash && b.prevHash == prevHash
+        && b.miner == request.auth.uid
+        && t.timestamp == b.timestamp
+        && t.nextWork is int && t.nextWork > 0
+        && t.supply == prevSupply + b.reward
+        && t.at == request.time;
     }
 
     // Everything else stays locked

@@ -94,7 +94,25 @@ const Economy = (() => {
   }
 
   /* ---------- placing an order ---------- */
-  async function placeOrder({ side, type, qty, price }) {
+  // Firestore allows 20 rule lookups per transaction and each fill uses 2 (one per history entry),
+  // so a big order is filled 9 resting orders at a time, in as many rounds as it takes.
+  const MAX_FILLS = 9;
+
+  async function placeOrder(o) {
+    let left = o.qty, filled = 0, value = 0, rest = 0;
+    for (let round = 0; round < 50 && left > 0; round++) {
+      const r = await placeChunk({ ...o, qty: left }, round > 0);
+      filled += r.filled;
+      value += r.value;
+      rest = r.rest;
+      left -= r.filled + r.rest;
+      if (!r.capped) break;
+    }
+    return { filled, value, rest };
+  }
+
+  // One transaction: fill up to MAX_FILLS resting orders, then rest any remainder (limit orders).
+  async function placeChunk({ side, type, qty, price }, continuing) {
     const uid = user.uid, name = myName();
     const other = side === "buy" ? "sell" : "buy";
     const crosses = (p) => type === "market" || (side === "buy" ? p <= price : p >= price);
@@ -105,8 +123,10 @@ const Economy = (() => {
     const candidates = snap.docs.map(asOrder).filter((o) => crosses(o.p)).sort(better);
     if (candidates.some((o) => o.uid === uid))
       throw new Error("That would trade with one of your own orders. Cancel it first, or change your price.");
-    if (type === "market" && !candidates.length)
+    if (type === "market" && !candidates.length) {
+      if (continuing) return { filled: 0, value: 0, rest: 0, capped: false };
       throw new Error(`No one is ${side === "buy" ? "selling" : "buying"} Pi right now. Try a limit order instead.`);
+    }
 
     // 2. Re-read everything inside a transaction, then move the money.
     return db.runTransaction(async (tx) => {
@@ -123,18 +143,22 @@ const Economy = (() => {
       const fills = [];
       let left = qty;
       for (const o of live) {
-        if (!left) break;
+        if (!left || fills.length >= MAX_FILLS) break;
         const n = Math.min(left, o.remaining);
         fills.push({ o, n });
         left -= n;
       }
       const filled = qty - left;
-      if (type === "market" && !filled) throw new Error("Those orders were just taken. Try again.");
+      const capped = left > 0 && fills.length >= MAX_FILLS;   // more to fill next round; don't rest yet
+      if (type === "market" && !filled) {
+        if (continuing) return { filled: 0, value: 0, rest: 0, capped: false };
+        throw new Error("Those orders were just taken. Try again.");
+      }
 
       const me = meSnap.data() || {};
       let cash = me.cash || 0, coins = me.coins || 0;
       const value = fills.reduce((a, f) => a + f.n * f.o.p, 0);
-      const rest = type === "limit" ? left : 0;          // market orders never rest on the book
+      const rest = type === "limit" && !capped ? left : 0;   // market orders never rest on the book
       if (side === "buy") {
         const need = value + rest * price;
         if (need > cash) throw new Error(`Not enough Cash: this needs ${fmtCash(need)} and you have ${fmtCash(cash)}.`);
@@ -163,6 +187,7 @@ const Economy = (() => {
         const buyer = side === "buy" ? uid : o.uid, seller = side === "buy" ? o.uid : uid;
         tx.set(t, {
           price: o.p, qty: n, taker: side, at: now(),
+          block: null,                                   // pending until a mined block confirms it
           buyer, seller, parties: [buyer, seller],
           buyerName: side === "buy" ? name : o.name, sellerName: side === "buy" ? o.name : name
         });
@@ -178,7 +203,7 @@ const Economy = (() => {
           uid, name, side, price, p: price, qty, remaining: rest, filled, status: "open", createdAt: now()
         });
       }
-      return { filled, value, rest };
+      return { filled, value, rest, capped };
     });
   }
 
@@ -377,9 +402,10 @@ const Economy = (() => {
       row.append(
         mk("span", t.taker === "buy" ? "pos" : "neg", fmtCash(t.price)),
         mk("span", null, fmtPi(t.qty)),
-        mk("span", "t", ago(ms(t.at)))
+        mk("span", "t", `${ago(ms(t.at))} · ${t.block ? `block #${t.block}` : "pending"}`)
       );
-      row.title = `${t.buyerName} bought from ${t.sellerName}`;
+      row.title = `${t.buyerName} bought from ${t.sellerName}` +
+        (t.block ? `, confirmed in block #${t.block}` : ". Waiting for a miner to put it in a block.");
       return row;
     }));
     renderChart();
@@ -431,15 +457,21 @@ const Economy = (() => {
       const row = mk("div", "hist-row");
       const what = mk("div", "what");
       let amt;
+      let when = ago(ms(h.at));
       if (h.kind === "grant") {
         what.append(mk("div", null, "Starting Cash"));
         amt = mk("div", "amt pos", `+${fmtCash(h.amount)}`);
+      } else if (h.kind === "block") {
+        what.append(mk("div", null, `Mined block #${h.height}${h.trades ? `, confirming ${h.trades} trade${h.trades === 1 ? "" : "s"}` : ""}`));
+        amt = mk("div", "amt pos", `+${fmtPi(h.reward)}`);
       } else {
         const buy = h.side === "buy";
         what.append(mk("div", null, `${buy ? "Bought" : "Sold"} ${fmtPi(h.qty)} at ${fmtCash(h.price)} ${buy ? "from" : "to"} ${h.with || "a player"}`));
         amt = mk("div", "amt " + (buy ? "neg" : "pos"), `${buy ? "-" : "+"}${fmtCash(h.qty * h.price)}`);
+        const t = st.trades.find((x) => x.id === h.id);   // history entries share the trade's id
+        if (t) when += t.block ? ` · confirmed in block #${t.block}` : " · pending, waiting for a block";
       }
-      what.append(mk("div", "when", ago(ms(h.at))));
+      what.append(mk("div", "when", when));
       row.append(what, amt);
       return row;
     }));
@@ -504,6 +536,7 @@ const Economy = (() => {
     unsubs.push(tradesCol().orderBy("at", "desc").limit(150).onSnapshot((s) => {
       st.trades = s.docs.map(asOrder);
       renderMarket();
+      renderHistory();                       // confirmations show up in the history too
     }, fail("Trades")));
     for (const side of ["buy", "sell"]) {
       unsubs.push(book(side).where("uid", "==", uid).onSnapshot((s) => {
