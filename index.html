@@ -284,6 +284,15 @@
   .f-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
   .f-table td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
 
+  .chip.crew { color: var(--blue); border-color: rgba(90, 169, 255, 0.4); background: rgba(90, 169, 255, 0.1); }
+  .staff-grid { margin-top: 8px; }
+  .sub-h { font-size: 14px; margin: 0 0 8px; color: var(--text); }
+  .f-person { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .f-person:last-child { border-bottom: none; }
+  .f-person-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 14px; }
+  .f-person-info span { font-size: 12px; color: var(--muted); }
+  .f-person-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .f-person-acts .btn-ghost { white-space: nowrap; }
   .chip.robo { color: var(--gold); border-color: rgba(245, 185, 66, 0.4); background: var(--gold-dim); }
   .f-upgrade { width: 100%; margin-top: 10px; padding: 9px; color: var(--gold); border-color: rgba(245, 185, 66, 0.4); }
   .f-res { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -303,6 +312,8 @@
 
   @media (max-width: 760px) {
     .f-res { grid-template-columns: 1fr; }
+    .f-person { grid-template-columns: 1fr; }
+    .f-person-acts { justify-content: flex-start; }
     .f-res-side { align-items: stretch; min-width: 0; }
     .f-res-side .progress { width: 100%; }
     .factory-grid, .kpis.four { grid-template-columns: 1fr; }
@@ -542,6 +553,20 @@
             </div>
             <p class="co-note" id="fRawCost"></p>
             <button class="btn-ghost f-buy" id="fBuy">Buy from suppliers</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top: 16px">
+        <h2>Employees</h2>
+        <div id="fPayroll"></div>
+        <div class="ex-grid staff-grid">
+          <div>
+            <h3 class="sub-h">Your staff</h3>
+            <div id="fStaff"></div>
+          </div>
+          <div id="fPoolCard">
+            <h3 class="sub-h">Hire</h3>
+            <div id="fPool"></div>
           </div>
         </div>
       </div>

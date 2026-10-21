@@ -210,12 +210,14 @@ service cloud.firestore {
             || newLastPrice() || controllerSpends());
       allow delete: if false;
 
-      // The factory: only the controller runs it (warehouse, lines, research, car sales)
+      // The factory: only the controller runs it (warehouse, lines, research, staff, car sales)
       match /factory/{doc} {
         allow read: if signedIn();
         allow create, update: if signedIn() && doc == 'main'
           && get(/databases/$(database)/documents/companies/$(ticker)).data.controller == request.auth.uid
-          && request.resource.data.keys().hasOnly(['inventory', 'lines', 'carsSold', 'revenue', 'research', 'project', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['inventory', 'lines', 'carsSold', 'revenue', 'research', 'project',
+                                                    'staff', 'wagesPaidTo', 'news', 'updatedAt'])
+          && (!('staff' in request.resource.data) || (request.resource.data.staff is list && request.resource.data.staff.size() <= 30))
           && request.resource.data.inventory is map
           && request.resource.data.lines is list && request.resource.data.lines.size() <= 10
           && isCount(request.resource.data.carsSold) && isCount(request.resource.data.revenue)

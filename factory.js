@@ -81,8 +81,83 @@ const Factory = (() => {
     if (recipe === "car" && research.alloy2) inp.steel = 4;
     return inp;
   }
-  const lineMult = (line) => ROBOTS[line.robots || 0].mult;
-  const unitMs = (line) => (RECIPES[line.recipe].secs * 1000) / lineMult(line);
+  // Employees: hired from an hourly pool, paid hourly from the treasury
+  const HOUR = 3600000;
+  const MAX_STAFF = 30;
+  const MAX_WORKERS_PER_LINE = 3;
+  const ROLES = {
+    worker:     { name: "Worker",      base: 800,  does: (s) => `+${10 * s}% speed on their line` },
+    researcher: { name: "Researcher",  base: 2000, does: (s) => `+${10 * s}% research speed` },
+    sales:      { name: "Salesperson", base: 1200, does: (s) => `+${2 * s}% on every car's price` },
+    manager:    { name: "Manager",     base: 3000, does: (s) => `boosts every other employee by ${5 * s}%` }
+  };
+  const wageFor = (role, skill) => Math.round(ROLES[role].base * (1 + 0.5 * (skill - 1)));
+  const trainCost = (skill) => 50000 * skill;            // $500 × current skill
+  const FIRST = ["Ava", "Ben", "Chloe", "Dev", "Elena", "Femi", "Gus", "Hana", "Ivan", "Jade", "Kofi", "Lena", "Mateo", "Nia",
+                 "Omar", "Priya", "Quinn", "Rosa", "Sam", "Tariq", "Uma", "Vik", "Wren", "Yuki", "Zoe", "Leo", "Mira", "Noah"];
+  const LAST = ["Alvarez", "Brooks", "Chen", "Diaz", "Evans", "Fischer", "Gupta", "Hughes", "Ito", "Jensen", "Kim", "Lopez", "Mensah",
+                "Novak", "Okafor", "Patel", "Reyes", "Sato", "Torres", "Ueda", "Vargas", "Walsh", "Young", "Zhang"];
+
+  // The same 6 candidates for everyone looking at a company this hour (seeded by ticker + hour)
+  function candidates(ticker, hour) {
+    let h = 2166136261;
+    for (const ch of `${ticker}:${hour}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    const rand = () => { h = Math.imul(h ^ (h >>> 15), 2246822507); h = Math.imul(h ^ (h >>> 13), 3266489909); return ((h ^= h >>> 16) >>> 0) / 4294967296; };
+    const roles = ["worker", "worker", "researcher", "sales", "manager", Object.keys(ROLES)[Math.floor(rand() * 4)]];
+    return roles.map((role, i) => {
+      const r = rand();
+      const skill = r < 0.35 ? 1 : r < 0.65 ? 2 : r < 0.85 ? 3 : r < 0.96 ? 4 : 5;
+      const name = `${FIRST[Math.floor(rand() * FIRST.length)]} ${LAST[Math.floor(rand() * LAST.length)]}`;
+      return { id: `${hour}-${i}`, name, role, skill, wage: wageFor(role, skill) };
+    });
+  }
+
+  const staffOf = (f) => f.staff || [];
+  const managerBoost = (f) => 1 + staffOf(f).filter((s) => s.role === "manager").reduce((a, s) => a + 0.05 * s.skill, 0);
+  const workersOn = (f, line) => staffOf(f).filter((s) => s.role === "worker" && s.line === line.id);
+  const lineMult = (line, f) =>
+    ROBOTS[line.robots || 0].mult * (1 + workersOn(f, line).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f));
+  const unitMs = (line, f) => (RECIPES[line.recipe].secs * 1000) / lineMult(line, f);
+  const researchSpeed = (f) => 1 + staffOf(f).filter((s) => s.role === "researcher").reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f);
+  const carPrice = (f) => Math.round(CAR_PRICE * (1 + Math.min(0.5, staffOf(f).filter((s) => s.role === "sales").reduce((a, s) => a + 0.02 * s.skill, 0) * managerBoost(f))));
+  const payrollPerHour = (f) => staffOf(f).reduce((a, s) => a + s.wage, 0);
+
+  // Change something that affects speed without losing progress: every running unit and the
+  // research project keep the same percent done and carry on at the new speed.
+  function rebase(f, now, mutate) {
+    const prog = f.lines.map((l) => (l.queued && l.startedAt ? (now - l.startedAt) / unitMs(l, f) : null));
+    const rp = f.project ? (now - f.project.startedAt) / (f.project.endsAt - f.project.startedAt) : null;
+    mutate();
+    f.lines.forEach((l, i) => { if (prog[i] != null) l.startedAt = now - prog[i] * unitMs(l, f); });
+    if (f.project && rp != null) {
+      const total = (f.project.baseMs || f.project.endsAt - f.project.startedAt) / researchSpeed(f);
+      f.project.startedAt = now - rp * total;
+      f.project.endsAt = f.project.startedAt + total;
+    }
+  }
+
+  // Pay every whole hour since the last payday. If the treasury runs short, the best-paid quit first.
+  function payroll(f, now, treasury) {
+    const hourNow = Math.floor(now / HOUR) * HOUR;
+    if (!staffOf(f).length) { f.wagesPaidTo = hourNow; return treasury; }
+    const from = f.wagesPaidTo || hourNow;
+    const hours = Math.min(168, Math.floor((now - from) / HOUR));
+    for (let h = 0; h < hours && f.staff.length; h++) {
+      if (treasury < payrollPerHour(f)) {
+        rebase(f, now, () => {
+          while (f.staff.length && treasury < payrollPerHour(f)) {
+            const top = f.staff.reduce((a, s) => (s.wage > a.wage ? s : a));
+            f.staff = f.staff.filter((s) => s !== top);
+            f.news = [`${top.name} (${ROLES[top.role].name.toLowerCase()}) quit: the treasury couldn't pay their wage`, ...(f.news || [])].slice(0, 8);
+          }
+        });
+      }
+      treasury -= payrollPerHour(f);
+    }
+    f.wagesPaidTo = hours ? from + hours * HOUR : from;
+    if (now - f.wagesPaidTo >= 168 * HOUR) f.wagesPaidTo = hourNow;   // more than a week behind: forgive the rest
+    return treasury;
+  }
 
   let fb = null, db = null, user = null, unsubs = [], factoryUnsub = null;
   const st = { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0 };
@@ -99,11 +174,12 @@ const Factory = (() => {
   const errText = (e) => Economy.errText(e);
   const companyRef = (t) => db.collection("companies").doc(t);
   const factoryRef = (t) => companyRef(t).collection("factory").doc("main");
-  const blank = () => ({ inventory: {}, lines: [], carsSold: 0, revenue: 0, research: {}, project: null });
+  const blank = () => ({ inventory: {}, lines: [], carsSold: 0, revenue: 0, research: {}, project: null, staff: [], wagesPaidTo: null, news: [] });
   // Every writer of the factory doc goes through this, so no field is ever dropped
   const clone = (f) => JSON.parse(JSON.stringify({
     inventory: f.inventory || {}, lines: f.lines || [], carsSold: f.carsSold || 0, revenue: f.revenue || 0,
-    research: f.research || {}, project: f.project || null
+    research: f.research || {}, project: f.project || null,
+    staff: f.staff || [], wagesPaidTo: f.wagesPaidTo || null, news: f.news || []
   }));
   const company = () => st.companies.find((c) => c.ticker === st.ticker);
   const iControl = () => { const c = company(); return !!(c && user && c.controller === user.uid); };
@@ -125,14 +201,14 @@ const Factory = (() => {
     }
     for (const line of f.lines) {
       if (!line.queued || !line.startedAt) continue;
-      const per = unitMs(line);
+      const per = unitMs(line, f);
       const n = Math.min(line.queued, Math.floor((now - line.startedAt) / per));
       if (n <= 0) continue;
       line.queued -= n;
       line.made = (line.made || 0) + n;
       line.startedAt = line.queued ? line.startedAt + n * per : null;
       if (RECIPES[line.recipe].sellsFor) {
-        const cash = n * RECIPES[line.recipe].sellsFor;
+        const cash = n * carPrice(f);
         f.carsSold += n;
         f.revenue += cash;
         income += cash;
@@ -154,7 +230,8 @@ const Factory = (() => {
       const before = JSON.stringify(f);
       const now = Date.now();
       let treasury = c.treasury + settle(f, now);
-      if (!change && JSON.stringify(f) === before) return "";   // nothing finished: no write
+      treasury = payroll(f, now, treasury);
+      if (!change && JSON.stringify(f) === before && treasury === c.treasury) return "";   // nothing to save
       const res = change ? change(f, treasury, now) || {} : {};
       if (res.treasury != null) treasury = res.treasury;
       if (treasury < 0) throw new Error(`The treasury only has ${fmtCash(c.treasury)}.`);
@@ -215,8 +292,9 @@ const Factory = (() => {
     if (f.project) throw new Error(`Your lab is busy with ${RESEARCH[f.project.key].name}. One project at a time.`);
     if (r.needs && !f.research[r.needs]) throw new Error(`Research ${RESEARCH[r.needs].name} first.`);
     if (treasury < r.cost) throw new Error(`${r.name} costs ${fmtCash(r.cost)}; the treasury has ${fmtCash(treasury)}.`);
-    const ms = (r.hours * 3600000) / (f.research.labs ? 2 : 1);
-    f.project = { key, startedAt: now, endsAt: now + ms };
+    const baseMs = (r.hours * 3600000) / (f.research.labs ? 2 : 1);
+    const ms = baseMs / researchSpeed(f);
+    f.project = { key, startedAt: now, endsAt: now + ms, baseMs };
     return { treasury: treasury - r.cost, msg: `✓ Started researching ${r.name}. Done in ${fmtDur(ms / 1000)}.` };
   });
 
@@ -226,12 +304,44 @@ const Factory = (() => {
     if (!f.research[next.needs]) throw new Error(`Research ${RESEARCH[next.needs].name} first.`);
     if (treasury < next.cost) throw new Error(`${next.name} cost ${fmtCash(next.cost)}; the treasury has ${fmtCash(treasury)}.`);
     // Keep the unit in progress at the same percent done, then carry on at the new speed
-    if (line.queued && line.startedAt) {
-      const old = unitMs(line), into = now - line.startedAt;
-      line.robots = tier;
-      line.startedAt = now - into * (unitMs(line) / old);
-    } else line.robots = tier;
+    rebase(f, now, () => { line.robots = tier; });
     return { treasury: treasury - next.cost, msg: `✓ Line ${i + 1} now has ${next.name.toLowerCase()}: ${next.mult}× speed.` };
+  });
+
+  const hire = (cand) => act((f) => {
+    if (f.staff.length >= MAX_STAFF) throw new Error(`A company can employ at most ${MAX_STAFF} people.`);
+    if (f.staff.some((s) => s.id === cand.id)) throw new Error(`${cand.name} already works here.`);
+    rebase(f, Date.now(), () => {
+      f.staff.push({ ...cand, line: null, hiredAt: Date.now() });
+    });
+    return { msg: `✓ Hired ${cand.name} as a ${ROLES[cand.role].name.toLowerCase()} for ${fmtCash(cand.wage)}/hour.` };
+  });
+
+  const assign = (id, lineId) => act((f, treasury, now) => {
+    const s = f.staff.find((x) => x.id === id);
+    if (!s) throw new Error("That person no longer works here.");
+    const line = f.lines.find((l) => l.id === lineId);
+    if (line && workersOn(f, line).filter((x) => x.id !== id).length >= MAX_WORKERS_PER_LINE)
+      throw new Error(`A line takes at most ${MAX_WORKERS_PER_LINE} workers.`);
+    rebase(f, now, () => { s.line = line ? line.id : null; });
+    return { msg: line ? `✓ ${s.name} now works on line ${f.lines.indexOf(line) + 1}.` : `✓ ${s.name} is unassigned.` };
+  });
+
+  const train = (id) => act((f, treasury, now) => {
+    const s = f.staff.find((x) => x.id === id);
+    if (!s) throw new Error("That person no longer works here.");
+    if (s.skill >= 5) throw new Error(`${s.name} is already at the top skill level.`);
+    const cost = trainCost(s.skill);
+    if (treasury < cost) throw new Error(`Training costs ${fmtCash(cost)}; the treasury has ${fmtCash(treasury)}.`);
+    rebase(f, now, () => { s.skill += 1; s.wage = wageFor(s.role, s.skill); });
+    return { treasury: treasury - cost, msg: `✓ ${s.name} is now skill ${s.skill}; their wage is ${fmtCash(s.wage)}/hour.` };
+  });
+
+  const fire = (id) => act((f, treasury, now) => {
+    const s = f.staff.find((x) => x.id === id);
+    if (!s) throw new Error("That person no longer works here.");
+    rebase(f, now, () => { f.staff = f.staff.filter((x) => x.id !== id); });
+    return { msg: `✓ ${s.name} has left the company.` };
   });
 
   // Count finished units (and bank car sales) without changing anything else.
@@ -288,7 +398,7 @@ const Factory = (() => {
     kpis.append(
       k("Treasury", fmtCash(c.treasury + income), income ? `includes ${fmtCash(income)} from cars just sold` : "pays for materials and lines"),
       k("Production lines", `${f.lines.length} / ${MAX_LINES}`, `${f.lines.filter((l) => l.queued).length} running`),
-      k("Cars sold", f.carsSold.toLocaleString(), `to everyday buyers at ${fmtCash(CAR_PRICE)} each`),
+      k("Cars sold", f.carsSold.toLocaleString(), `to everyday buyers at ${fmtCash(carPrice(f))} each`),
       k("Car revenue", fmtCash(f.revenue), "all-time, into the treasury")
     );
     const who = mk("p", "co-note", iControl()
@@ -324,12 +434,14 @@ const Factory = (() => {
         what = mk("span", "chip", `makes ${ITEMS[line.recipe].many}`);
       }
       const tier = ROBOTS[line.robots || 0];
-      const robo = mk("span", "chip" + (line.robots ? " robo" : ""), line.robots ? `${tier.name} · ${tier.mult}×` : "Workers only");
-      head.append(name, what, robo, mk("span", "f-made", `${(line.made || 0).toLocaleString()} made`));
+      const robo = mk("span", "chip" + (line.robots ? " robo" : ""), line.robots ? `${tier.name} · ${tier.mult}×` : "No robots");
+      const crew = workersOn(f, line);
+      const people = mk("span", "chip" + (crew.length ? " crew" : ""), crew.length ? `${crew.length} worker${crew.length === 1 ? "" : "s"} · ${lineMult(line, f).toFixed(2).replace(/\.?0+$/, "")}× total` : "No workers");
+      head.append(name, what, robo, people, mk("span", "f-made", `${(line.made || 0).toLocaleString()} made`));
       const inputs = line.queued && line.inputs
         ? Object.entries(line.inputs).map(([k, n]) => qtyName(k, n)).join(" + ")
         : inputsText(line.recipe, f.research);
-      const recipe = mk("div", "f-recipe-text", `${inputs} → 1 ${ITEMS[line.recipe].one} · ${fmtDur(unitMs(line) / 1000)} each${r.sellsFor ? ` · sold instantly for ${fmtCash(r.sellsFor)}` : ""}`);
+      const recipe = mk("div", "f-recipe-text", `${inputs} → 1 ${ITEMS[line.recipe].one} · ${fmtDur(unitMs(line, f) / 1000)} each${r.sellsFor ? ` · sold instantly for ${fmtCash(carPrice(f))}` : ""}`);
       const bar = mk("div", "progress"); const fill = mk("div"); fill.dataset.line = i; bar.append(fill);
       const status = mk("div", "f-status"); status.dataset.line = i;
       card.append(head, recipe, bar, status);
@@ -376,7 +488,7 @@ const Factory = (() => {
       const fill = document.querySelector(`#fLines .progress > div[data-line="${i}"]`);
       const status = document.querySelector(`#fLines .f-status[data-line="${i}"]`);
       if (!fill || !status) return;
-      const per = unitMs(line);
+      const per = unitMs(line, f);
       if (!line.queued) {
         fill.style.width = "0%";
         status.textContent = "Idle. Queue some units to start.";
@@ -397,7 +509,7 @@ const Factory = (() => {
       const done = !!f.research[key];
       const active = f.project && f.project.key === key;
       const locked = r.needs && !f.research[r.needs];
-      const ms = (r.hours * 3600000) / (f.research.labs && key !== "labs" ? 2 : 1);
+      const ms = (r.hours * 3600000) / (f.research.labs && key !== "labs" ? 2 : 1) / researchSpeed(f);
       const info = mk("div", "f-res-info");
       info.append(mk("b", null, r.name), mk("span", null, r.does));
       const side = mk("div", "f-res-side");
@@ -418,6 +530,78 @@ const Factory = (() => {
       return row;
     }));
     tick();
+  }
+
+  const stars = (n) => "★".repeat(n) + "☆".repeat(5 - n);
+
+  function renderStaff() {
+    const { f } = projected();
+    const can = iControl(), c = company();
+    const pay = payrollPerHour(f);
+    const nextPay = Math.max(0, Math.ceil(((f.wagesPaidTo || Math.floor(Date.now() / HOUR) * HOUR) + HOUR - Date.now()) / 60000));
+    const sum = g("fPayroll");
+    sum.replaceChildren(mk("p", "co-note", f.staff.length
+      ? `${f.staff.length} of ${MAX_STAFF} employees · ${fmtCash(pay)}/hour in wages, paid hourly from the treasury · next payday in about ${nextPay} min` +
+        (c && c.treasury < pay ? " · the treasury can't cover the next payday, so the best-paid will quit" : "")
+      : `No employees yet. Workers speed up lines, researchers speed up the lab, salespeople raise car prices, and managers boost everyone.`));
+    for (const n of f.news || []) sum.append(mk("p", "co-note neg", n));
+
+    const box = g("fStaff");
+    if (!f.staff.length) box.replaceChildren(mk("div", "empty", "No one works here yet."));
+    else box.replaceChildren(...f.staff.map((sf, i) => {
+      const row = mk("div", "f-person");
+      const info = mk("div", "f-person-info");
+      info.append(
+        mk("b", null, sf.name),
+        mk("span", null, `${ROLES[sf.role].name} · ${stars(sf.skill)} · ${fmtCash(sf.wage)}/hour`),
+        mk("span", null, ROLES[sf.role].does(sf.skill) + (managerBoost(f) > 1 && sf.role !== "manager" ? " (more with your managers)" : ""))
+      );
+      row.append(info);
+      if (can) {
+        const acts = mk("div", "f-person-acts");
+        if (sf.role === "worker") {
+          const sel = mk("select", "f-recipe");
+          sel.id = `fAssign${i}`;
+          sel.setAttribute("aria-label", `Where ${sf.name} works`);
+          const none = mk("option", null, "Not on a line"); none.value = "";
+          sel.append(none, ...f.lines.map((l, j) => { const o = mk("option", null, `Line ${j + 1} (${ITEMS[l.recipe].many})`); o.value = l.id; return o; }));
+          sel.value = sf.line || "";
+          sel.addEventListener("change", (e) => run(() => assign(sf.id, e.target.value || null)));
+          acts.append(sel);
+        }
+        if (sf.skill < 5) {
+          const t = mk("button", "btn-ghost", `Train · ${fmtCash(trainCost(sf.skill))}`);
+          t.addEventListener("click", () => run(() => train(sf.id)));
+          acts.append(t);
+        }
+        const x = mk("button", "btn-ghost", "Let go");
+        x.addEventListener("click", () => run(() => fire(sf.id)));
+        acts.append(x);
+        row.append(acts);
+      } else if (sf.role === "worker") {
+        const l = f.lines.findIndex((x) => x.id === sf.line);
+        row.append(mk("span", "chip", l >= 0 ? `line ${l + 1}` : "not on a line"));
+      }
+      return row;
+    }));
+
+    const poolBox = g("fPool");
+    g("fPoolCard").classList.toggle("hidden", !can);
+    if (!can || !c) return;
+    const hour = Math.floor(Date.now() / HOUR);
+    const pool = candidates(c.ticker, hour).filter((p) => !f.staff.some((s) => s.id === p.id));
+    const mins = Math.ceil(((hour + 1) * HOUR - Date.now()) / 60000);
+    poolBox.replaceChildren(mk("p", "co-note", `New candidates in about ${mins} min.`),
+      ...(pool.length ? pool.map((p) => {
+        const row = mk("div", "f-person");
+        const info = mk("div", "f-person-info");
+        info.append(mk("b", null, p.name), mk("span", null, `${ROLES[p.role].name} · ${stars(p.skill)} · ${fmtCash(p.wage)}/hour`), mk("span", null, ROLES[p.role].does(p.skill)));
+        const b = mk("button", "btn-ghost", "Hire");
+        b.addEventListener("click", () => run(() => hire(p)));
+        const acts = mk("div", "f-person-acts"); acts.append(b);
+        row.append(info, acts);
+        return row;
+      }) : [mk("div", "empty", "You've hired everyone available this hour.")]));
   }
 
   function renderWarehouse() {
@@ -444,7 +628,7 @@ const Factory = (() => {
       const r = RECIPES[k];
       const tr = mk("tr");
       tr.append(mk("td", null, ITEMS[k].name), mk("td", null, inputsText(k, research)), mk("td", "num", fmtDur(r.secs)),
-        mk("td", null, r.sellsFor ? `Sold instantly to everyday buyers for ${fmtCash(r.sellsFor)}` : "Kept in the warehouse"));
+        mk("td", null, r.sellsFor ? `Sold instantly to everyday buyers for ${fmtCash(st.factory ? carPrice(projected().f) : r.sellsFor)}` : "Kept in the warehouse"));
       return tr;
     });
     const raw = RAW.map((k) => `${ITEMS[k].name} ${fmtCash(ITEMS[k].price)}`).join(" · ");
@@ -458,7 +642,7 @@ const Factory = (() => {
     g("fRecipes").replaceChildren(wrap, mk("p", "co-note", `Raw materials from suppliers: ${raw}. A car's materials cost about $136, so each car earns about $114. Times are for a line without robots; this company's research is already counted in the recipes.`));
   }
 
-  function renderAll() { renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderRecipes(); }
+  function renderAll() { renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderStaff(); renderRecipes(); }
 
   function watchFactory(ticker) {
     if (factoryUnsub) factoryUnsub();
@@ -485,6 +669,7 @@ const Factory = (() => {
     g("fBuild").addEventListener("click", () => run(buildLine));
     g("fCompany").addEventListener("change", (e) => watchFactory(e.target.value));
     renderRecipes();
+    setInterval(() => { if (user && st.factory) renderStaff(); }, 60000);
     setInterval(() => {
       if (!user) return;
       tick();
