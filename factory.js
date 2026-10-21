@@ -90,11 +90,11 @@ const Factory = (() => {
     researcher: { name: "Researcher",  base: 2000, does: (s) => `+${10 * s}% research speed` },
     sales:      { name: "Salesperson", base: 1200, does: (s) => `+${2 * s}% on every car's price` },
     manager:    { name: "Manager",     base: 3000, does: (s) => `boosts every other employee by ${5 * s}%` },
-    glitch:     { name: "Glitch",      base: 0,    does: (s) => `works every job at once: line speed, research, car prices and managing (skill ${s})` }
+    glitch:     { name: "Glitch",      base: 0,    does: (s) => `works every job at once: line speed, research, car prices and managing (skill ${s}), and his line makes 5× as much` }
   };
   // Hard-coded staff: always on the payroll of these companies, for free, and can't be let go or trained
   const FIXED_STAFF = {
-    TSLA: [{ id: "missingno", name: "MissingNo.", role: "glitch", skill: 5, wage: 0, line: null, fixed: true }]
+    TSLA: [{ id: "missingno", name: "MissingNo.", role: "glitch", skill: 5, wage: 0, line: null, fixed: true, outputMult: 5 }]
   };
   const POOL_MS = 5 * 60 * 1000;      // a new batch of candidates every 5 minutes
   const wageFor = (role, skill) => Math.round(ROLES[role].base * (1 + 0.5 * (skill - 1)));
@@ -122,9 +122,15 @@ const Factory = (() => {
   const is = (s, role) => s.role === role || s.role === "glitch";   // a glitch counts as every role
   const managerBoost = (f) => 1 + staffOf(f).filter((s) => is(s, "manager")).reduce((a, s) => a + 0.05 * s.skill, 0);
   const workersOn = (f, line) => staffOf(f).filter((s) => is(s, "worker") && s.line === line.id);
+  // Units that come off a line for each unit queued (MissingNo.'s line makes 5)
+  const outMult = (line, f) => staffOf(f).filter((s) => s.line === line.id && s.outputMult).reduce((a, s) => a * s.outputMult, 1);
   // Make sure a company's hard-coded staff are on its books
   function addFixedStaff(f, ticker) {
-    for (const p of FIXED_STAFF[ticker] || []) if (!f.staff.some((s) => s.id === p.id)) f.staff.unshift({ ...p, hiredAt: Date.now() });
+    for (const p of FIXED_STAFF[ticker] || []) {
+      const have = f.staff.find((s) => s.id === p.id);
+      if (!have) f.staff.unshift({ ...p, hiredAt: Date.now() });
+      else Object.assign(have, { ...p, line: have.line, hiredAt: have.hiredAt });
+    }
     return f;
   }
   const lineMult = (line, f) =>
@@ -216,16 +222,17 @@ const Factory = (() => {
       const per = unitMs(line, f);
       const n = Math.min(line.queued, Math.floor((now - line.startedAt) / per));
       if (n <= 0) continue;
+      const out = n * outMult(line, f);                 // units that actually come off the line
       line.queued -= n;
-      line.made = (line.made || 0) + n;
+      line.made = (line.made || 0) + out;
       line.startedAt = line.queued ? line.startedAt + n * per : null;
       if (RECIPES[line.recipe].sellsFor) {
-        const cash = n * carPrice(f);
-        f.carsSold += n;
+        const cash = out * carPrice(f);
+        f.carsSold += out;
         f.revenue += cash;
         income += cash;
       } else {
-        f.inventory[line.recipe] = (f.inventory[line.recipe] || 0) + n;
+        f.inventory[line.recipe] = (f.inventory[line.recipe] || 0) + out;
       }
     }
     return income;
@@ -452,11 +459,14 @@ const Factory = (() => {
       const robo = mk("span", "chip" + (line.robots ? " robo" : ""), line.robots ? `${tier.name} · ${tier.mult}×` : "No robots");
       const crew = workersOn(f, line);
       const people = mk("span", "chip" + (crew.length ? " crew" : ""), crew.length ? `${crew.length} worker${crew.length === 1 ? "" : "s"} · ${lineMult(line, f).toFixed(2).replace(/\.?0+$/, "")}× total` : "No workers");
-      head.append(name, what, robo, people, mk("span", "f-made", `${(line.made || 0).toLocaleString()} made`));
+      const om = outMult(line, f);
+      head.append(name, what, robo, people);
+      if (om > 1) head.append(mk("span", "chip glitch", `×${om} output`));
+      head.append(mk("span", "f-made", `${(line.made || 0).toLocaleString()} made`));
       const inputs = line.queued && line.inputs
         ? Object.entries(line.inputs).map(([k, n]) => qtyName(k, n)).join(" + ")
         : inputsText(line.recipe, f.research);
-      const recipe = mk("div", "f-recipe-text", `${inputs} → 1 ${ITEMS[line.recipe].one} · ${fmtDur(unitMs(line, f) / 1000)} each${r.sellsFor ? ` · sold instantly for ${fmtCash(carPrice(f))}` : ""}`);
+      const recipe = mk("div", "f-recipe-text", `${inputs} → ${om > 1 ? `${om} ${ITEMS[line.recipe].many}` : `1 ${ITEMS[line.recipe].one}`} · ${fmtDur(unitMs(line, f) / 1000)} each${r.sellsFor ? ` · sold instantly for ${fmtCash(carPrice(f))}` : ""}`);
       const bar = mk("div", "progress"); const fill = mk("div"); fill.dataset.line = i; bar.append(fill);
       const status = mk("div", "f-status"); status.dataset.line = i;
       card.append(head, recipe, bar, status);
