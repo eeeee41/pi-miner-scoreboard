@@ -660,6 +660,7 @@ function handleAuth(user) {
     state.user = null;
     Economy.signOut();
     Companies.signOut();
+    Factory.signOut();
     resetSession();
     $("dashboard").classList.add("hidden");
     $("userChip").classList.add("hidden");
@@ -679,6 +680,7 @@ function handleAuth(user) {
 
   Economy.signIn(user);                        // wallet, starting Cash, exchange
   Companies.signIn(user);                      // companies, shares, dividends
+  Factory.signIn(user);                        // production
   const session = state.session;
   const live = (fn) => (...args) => { if (session === state.session) fn(...args); };
   const fail = (what) => live((err) => setStatus(`${what}: ${dbErrorMessage(err)}`, "err"));
@@ -744,6 +746,7 @@ if (typeof firebase === "undefined") {
   db = firebase.firestore();
   Economy.init(firebase, db);
   Companies.init(firebase, db);
+  Factory.init(firebase, db);
   auth.getRedirectResult().catch(showAuthError);
   auth.onAuthStateChanged(handleAuth);
 }

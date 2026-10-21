@@ -260,7 +260,32 @@
   .co-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0 12px; align-items: end; }
   .co-form > .btn-ghost { margin-top: 14px; padding: 11px 14px; }
 
+  /* ---------- Factory ---------- */
+  .kpis.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .factory-grid { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
+  .f-line { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .f-line + .f-line { margin-top: 10px; }
+  .f-line-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .f-line-head .f-made { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .f-recipe { font: inherit; font-size: 14px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; }
+  .f-recipe-text { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .f-line .progress { margin-top: 10px; }
+  .f-status { font-size: 13px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .f-line .co-form > .btn-ghost { padding: 11px 12px; }
+  #fBuild { margin-top: 14px; }
+  .f-inv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 16px; }
+  .f-item { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .f-item b { font-variant-numeric: tabular-nums; }
+  .f-item.none { color: var(--muted); }
+  .f-buy { margin-top: 10px; width: 100%; padding: 10px; }
+  .f-table-wrap { overflow-x: auto; }
+  .f-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .f-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); }
+  .f-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .f-table td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
   @media (max-width: 760px) {
+    .factory-grid, .kpis.four { grid-template-columns: 1fr; }
     .stocks-grid, .kpis { grid-template-columns: 1fr; }
     header { padding: 12px 16px; }
     .brand span { display: none; }
@@ -312,6 +337,7 @@
       <button class="tab" role="tab" id="tabBtn-wallet" data-tab="wallet" aria-selected="false">Wallet</button>
       <button class="tab" role="tab" id="tabBtn-exchange" data-tab="exchange" aria-selected="false">Exchange</button>
       <button class="tab" role="tab" id="tabBtn-stocks" data-tab="stocks" aria-selected="false">Stocks</button>
+      <button class="tab" role="tab" id="tabBtn-factory" data-tab="factory" aria-selected="false">Factory</button>
     </nav>
 
     <div id="tab-mine" role="tabpanel">
@@ -470,6 +496,39 @@
         <div id="sPortfolio"><div class="empty">Loading…</div></div>
       </div>
     </div>
+
+    <!-- ===== Factory ===== -->
+    <div id="tab-factory" role="tabpanel" class="hidden">
+      <div class="card">
+        <label class="field market-pick" for="fCompany"><span>Company</span><select id="fCompany"></select></label>
+        <div id="fSummary"><div class="empty">Loading…</div></div>
+        <div class="status" id="fMsg"></div>
+      </div>
+      <div class="ex-grid factory-grid">
+        <div class="card">
+          <h2>Production lines</h2>
+          <div id="fLines"><div class="empty">Loading…</div></div>
+          <button class="btn-primary buy hidden" id="fBuild">Build a production line</button>
+        </div>
+        <div class="card">
+          <h2>Warehouse</h2>
+          <div id="fInv" class="f-inv"></div>
+          <div class="co-sec" id="fBuyBox">
+            <h3>Buy raw materials</h3>
+            <div class="co-form">
+              <label class="field" for="fRaw"><span>Material</span><select id="fRaw"></select></label>
+              <label class="field" for="fRawQty"><span>How many</span><input id="fRawQty" type="number" min="1" step="1" value="100" /></label>
+            </div>
+            <p class="co-note" id="fRawCost"></p>
+            <button class="btn-ghost f-buy" id="fBuy">Buy from suppliers</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top: 16px">
+        <h2>What you can make</h2>
+        <div id="fRecipes"></div>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -481,6 +540,8 @@
 <script src="economy.js"></script>
 <!-- Phase 2: companies, shares and dividends -->
 <script src="companies.js"></script>
+<!-- Phase 3: production -->
+<script src="factory.js"></script>
 
 <!-- Mining on the shared Pi blockchain + sign-in (loads last) -->
 <script src="miner.js"></script>

@@ -294,6 +294,7 @@ const Economy = (() => {
   async function upkeep() {
     if (!user) return;
     try { await settleExpired(); } catch (err) { console.warn("Upkeep:", err); }
+    if (window.Factory) await Factory.upkeep().catch((err) => console.warn("Factory upkeep:", err));   // bank car sales first
     if (window.Companies) await Companies.upkeep().catch((err) => console.warn("Company upkeep:", err));
   }
 
@@ -590,7 +591,7 @@ const Economy = (() => {
   }
 
   /* ---------- tabs ---------- */
-  const TABS = ["mine", "wallet", "exchange", "stocks"];
+  const TABS = ["mine", "wallet", "exchange", "stocks", "factory"];
   function showTab(name) {
     if (!TABS.includes(name)) name = "mine";
     for (const t of TABS) {

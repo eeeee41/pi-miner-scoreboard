@@ -206,8 +206,22 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if signedIn() && newCompany(ticker);
       allow update: if signedIn()
-        && (companySettings() || buyOffering() || addToTreasury() || payout() || takeControl(ticker) || newLastPrice());
+        && (companySettings() || buyOffering() || addToTreasury() || payout() || takeControl(ticker)
+            || newLastPrice() || controllerSpends());
       allow delete: if false;
+
+      // The factory: only the controller runs it (warehouse, production lines, car sales)
+      match /factory/{doc} {
+        allow read: if signedIn();
+        allow create, update: if signedIn() && doc == 'main'
+          && get(/databases/$(database)/documents/companies/$(ticker)).data.controller == request.auth.uid
+          && request.resource.data.keys().hasOnly(['inventory', 'lines', 'carsSold', 'revenue', 'updatedAt'])
+          && request.resource.data.inventory is map
+          && request.resource.data.lines is list && request.resource.data.lines.size() <= 10
+          && isCount(request.resource.data.carsSold) && isCount(request.resource.data.revenue)
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if false;
+      }
 
       // Shareholdings. Owners may change their own; anyone else may only add (paying for a trade).
       match /holders/{holder} {
@@ -272,7 +286,7 @@ service cloud.firestore {
     }
 
     // Hourly dividends: the clock moves forward in whole hours and the treasury pays at most
-    // the dividend for those hours. Money never leaves the treasury any other way.
+    // the dividend for those hours. Otherwise only the controller's factory spending takes money out.
     function payout() {
       let c = request.resource.data;
       let was = resource.data;
@@ -291,6 +305,13 @@ service cloud.firestore {
         && c.controller != 'market' && validName(c.controllerName)
         && get(/databases/$(database)/documents/companies/$(ticker)/holders/$(c.controller)).data.shares
            > get(/databases/$(database)/documents/companies/$(ticker)/holders/$(resource.data.controller)).data.shares;
+    }
+
+    // The controller spends the treasury on the factory (materials, lines) and banks car sales
+    function controllerSpends() {
+      return resource.data.controller == request.auth.uid
+        && changed().hasOnly(['treasury'])
+        && isCount(request.resource.data.treasury);
     }
 
     // The last trade price shown on the Stocks tab
