@@ -89,8 +89,14 @@ const Factory = (() => {
     worker:     { name: "Worker",      base: 800,  does: (s) => `+${10 * s}% speed on their line` },
     researcher: { name: "Researcher",  base: 2000, does: (s) => `+${10 * s}% research speed` },
     sales:      { name: "Salesperson", base: 1200, does: (s) => `+${2 * s}% on every car's price` },
-    manager:    { name: "Manager",     base: 3000, does: (s) => `boosts every other employee by ${5 * s}%` }
+    manager:    { name: "Manager",     base: 3000, does: (s) => `boosts every other employee by ${5 * s}%` },
+    glitch:     { name: "Glitch",      base: 0,    does: (s) => `works every job at once: line speed, research, car prices and managing (skill ${s})` }
   };
+  // Hard-coded staff: always on the payroll of these companies, for free, and can't be let go or trained
+  const FIXED_STAFF = {
+    TSLA: [{ id: "missingno", name: "MissingNo.", role: "glitch", skill: 5, wage: 0, line: null, fixed: true }]
+  };
+  const POOL_MS = 5 * 60 * 1000;      // a new batch of candidates every 5 minutes
   const wageFor = (role, skill) => Math.round(ROLES[role].base * (1 + 0.5 * (skill - 1)));
   const trainCost = (skill) => 50000 * skill;            // $500 × current skill
   const FIRST = ["Ava", "Ben", "Chloe", "Dev", "Elena", "Femi", "Gus", "Hana", "Ivan", "Jade", "Kofi", "Lena", "Mateo", "Nia",
@@ -98,7 +104,7 @@ const Factory = (() => {
   const LAST = ["Alvarez", "Brooks", "Chen", "Diaz", "Evans", "Fischer", "Gupta", "Hughes", "Ito", "Jensen", "Kim", "Lopez", "Mensah",
                 "Novak", "Okafor", "Patel", "Reyes", "Sato", "Torres", "Ueda", "Vargas", "Walsh", "Young", "Zhang"];
 
-  // The same 6 candidates for everyone looking at a company this hour (seeded by ticker + hour)
+  // The same 6 candidates for everyone looking at a company in this 5-minute slot (seeded by ticker + slot)
   function candidates(ticker, hour) {
     let h = 2166136261;
     for (const ch of `${ticker}:${hour}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
@@ -113,13 +119,19 @@ const Factory = (() => {
   }
 
   const staffOf = (f) => f.staff || [];
-  const managerBoost = (f) => 1 + staffOf(f).filter((s) => s.role === "manager").reduce((a, s) => a + 0.05 * s.skill, 0);
-  const workersOn = (f, line) => staffOf(f).filter((s) => s.role === "worker" && s.line === line.id);
+  const is = (s, role) => s.role === role || s.role === "glitch";   // a glitch counts as every role
+  const managerBoost = (f) => 1 + staffOf(f).filter((s) => is(s, "manager")).reduce((a, s) => a + 0.05 * s.skill, 0);
+  const workersOn = (f, line) => staffOf(f).filter((s) => is(s, "worker") && s.line === line.id);
+  // Make sure a company's hard-coded staff are on its books
+  function addFixedStaff(f, ticker) {
+    for (const p of FIXED_STAFF[ticker] || []) if (!f.staff.some((s) => s.id === p.id)) f.staff.unshift({ ...p, hiredAt: Date.now() });
+    return f;
+  }
   const lineMult = (line, f) =>
     ROBOTS[line.robots || 0].mult * (1 + workersOn(f, line).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f));
   const unitMs = (line, f) => (RECIPES[line.recipe].secs * 1000) / lineMult(line, f);
-  const researchSpeed = (f) => 1 + staffOf(f).filter((s) => s.role === "researcher").reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f);
-  const carPrice = (f) => Math.round(CAR_PRICE * (1 + Math.min(0.5, staffOf(f).filter((s) => s.role === "sales").reduce((a, s) => a + 0.02 * s.skill, 0) * managerBoost(f))));
+  const researchSpeed = (f) => 1 + staffOf(f).filter((s) => is(s, "researcher")).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f);
+  const carPrice = (f) => Math.round(CAR_PRICE * (1 + Math.min(0.5, staffOf(f).filter((s) => is(s, "sales")).reduce((a, s) => a + 0.02 * s.skill, 0) * managerBoost(f))));
   const payrollPerHour = (f) => staffOf(f).reduce((a, s) => a + s.wage, 0);
 
   // Change something that affects speed without losing progress: every running unit and the
@@ -226,8 +238,8 @@ const Factory = (() => {
       const c = (await tx.get(companyRef(t))).data();
       if (!c || c.controller !== uid) throw new Error("Only the company's controller can run its factory.");
       const snap = await tx.get(factoryRef(t));
-      const f = snap.exists ? clone(snap.data()) : blank();
-      const before = JSON.stringify(f);
+      const f = addFixedStaff(snap.exists ? clone(snap.data()) : blank(), t);
+      const before = JSON.stringify(snap.exists ? clone(snap.data()) : blank());
       const now = Date.now();
       let treasury = c.treasury + settle(f, now);
       treasury = payroll(f, now, treasury);
@@ -323,6 +335,7 @@ const Factory = (() => {
     const line = f.lines.find((l) => l.id === lineId);
     if (line && workersOn(f, line).filter((x) => x.id !== id).length >= MAX_WORKERS_PER_LINE)
       throw new Error(`A line takes at most ${MAX_WORKERS_PER_LINE} workers.`);
+    if (!is(s, "worker")) throw new Error(`${s.name} doesn't work on lines.`);
     rebase(f, now, () => { s.line = line ? line.id : null; });
     return { msg: line ? `✓ ${s.name} now works on line ${f.lines.indexOf(line) + 1}.` : `✓ ${s.name} is unassigned.` };
   });
@@ -330,6 +343,7 @@ const Factory = (() => {
   const train = (id) => act((f, treasury, now) => {
     const s = f.staff.find((x) => x.id === id);
     if (!s) throw new Error("That person no longer works here.");
+    if (s.fixed) throw new Error(`${s.name} can't be trained. He's already off the charts.`);
     if (s.skill >= 5) throw new Error(`${s.name} is already at the top skill level.`);
     const cost = trainCost(s.skill);
     if (treasury < cost) throw new Error(`Training costs ${fmtCash(cost)}; the treasury has ${fmtCash(treasury)}.`);
@@ -340,6 +354,7 @@ const Factory = (() => {
   const fire = (id) => act((f, treasury, now) => {
     const s = f.staff.find((x) => x.id === id);
     if (!s) throw new Error("That person no longer works here.");
+    if (s.fixed) throw new Error(`${s.name} can't be let go. He's part of the company now.`);
     rebase(f, now, () => { f.staff = f.staff.filter((x) => x.id !== id); });
     return { msg: `✓ ${s.name} has left the company.` };
   });
@@ -369,7 +384,7 @@ const Factory = (() => {
 
   // What the factory looks like right now, counting units finished since the last save.
   function projected() {
-    const f = clone(st.factory || blank());
+    const f = addFixedStaff(clone(st.factory || blank()), st.ticker);
     const income = settle(f, Date.now());
     return { f, income };
   }
@@ -554,12 +569,12 @@ const Factory = (() => {
       info.append(
         mk("b", null, sf.name),
         mk("span", null, `${ROLES[sf.role].name} · ${stars(sf.skill)} · ${fmtCash(sf.wage)}/hour`),
-        mk("span", null, ROLES[sf.role].does(sf.skill) + (managerBoost(f) > 1 && sf.role !== "manager" ? " (more with your managers)" : ""))
+        mk("span", null, ROLES[sf.role].does(sf.skill) + (managerBoost(f) > 1 && !is(sf, "manager") ? " (more with your managers)" : ""))
       );
       row.append(info);
       if (can) {
         const acts = mk("div", "f-person-acts");
-        if (sf.role === "worker") {
+        if (is(sf, "worker")) {
           const sel = mk("select", "f-recipe");
           sel.id = `fAssign${i}`;
           sel.setAttribute("aria-label", `Where ${sf.name} works`);
@@ -569,16 +584,19 @@ const Factory = (() => {
           sel.addEventListener("change", (e) => run(() => assign(sf.id, e.target.value || null)));
           acts.append(sel);
         }
-        if (sf.skill < 5) {
+        if (sf.fixed) acts.append(mk("span", "chip robo", "permanent · works for free"));
+        if (sf.skill < 5 && !sf.fixed) {
           const t = mk("button", "btn-ghost", `Train · ${fmtCash(trainCost(sf.skill))}`);
           t.addEventListener("click", () => run(() => train(sf.id)));
           acts.append(t);
         }
-        const x = mk("button", "btn-ghost", "Let go");
-        x.addEventListener("click", () => run(() => fire(sf.id)));
-        acts.append(x);
+        if (!sf.fixed) {
+          const x = mk("button", "btn-ghost", "Let go");
+          x.addEventListener("click", () => run(() => fire(sf.id)));
+          acts.append(x);
+        }
         row.append(acts);
-      } else if (sf.role === "worker") {
+      } else if (is(sf, "worker")) {
         const l = f.lines.findIndex((x) => x.id === sf.line);
         row.append(mk("span", "chip", l >= 0 ? `line ${l + 1}` : "not on a line"));
       }
@@ -588,10 +606,10 @@ const Factory = (() => {
     const poolBox = g("fPool");
     g("fPoolCard").classList.toggle("hidden", !can);
     if (!can || !c) return;
-    const hour = Math.floor(Date.now() / HOUR);
-    const pool = candidates(c.ticker, hour).filter((p) => !f.staff.some((s) => s.id === p.id));
-    const mins = Math.ceil(((hour + 1) * HOUR - Date.now()) / 60000);
-    poolBox.replaceChildren(mk("p", "co-note", `New candidates in about ${mins} min.`),
+    const slot = Math.floor(Date.now() / POOL_MS);
+    const pool = candidates(c.ticker, slot).filter((p) => !f.staff.some((s) => s.id === p.id));
+    const secs = Math.ceil(((slot + 1) * POOL_MS - Date.now()) / 1000);
+    poolBox.replaceChildren(mk("p", "co-note", `New candidates in ${secs >= 60 ? `about ${Math.ceil(secs / 60)} min` : `${secs} s`}.`),
       ...(pool.length ? pool.map((p) => {
         const row = mk("div", "f-person");
         const info = mk("div", "f-person-info");
@@ -601,7 +619,7 @@ const Factory = (() => {
         const acts = mk("div", "f-person-acts"); acts.append(b);
         row.append(info, acts);
         return row;
-      }) : [mk("div", "empty", "You've hired everyone available this hour.")]));
+      }) : [mk("div", "empty", "You've hired everyone in this batch. More are coming.")]));
   }
 
   function renderWarehouse() {
@@ -669,7 +687,7 @@ const Factory = (() => {
     g("fBuild").addEventListener("click", () => run(buildLine));
     g("fCompany").addEventListener("change", (e) => watchFactory(e.target.value));
     renderRecipes();
-    setInterval(() => { if (user && st.factory) renderStaff(); }, 60000);
+    setInterval(() => { if (user && st.factory) renderStaff(); }, 15000);   // payday countdown + new candidates every 5 min
     setInterval(() => {
       if (!user) return;
       tick();
