@@ -375,9 +375,24 @@ const Factory = (() => {
 
   /* ---------- rendering ---------- */
   function setMsg(text, kind) {
-    const m = g("fMsg");
-    m.textContent = text;
-    m.className = "status" + (kind ? " " + kind : "");
+    // Shown at the top of the factory and inside the Employees panel, so it's seen wherever you clicked
+    for (const id of ["fMsg", "staffMsg"]) {
+      const m = g(id);
+      if (!m) continue;
+      m.textContent = text;
+      m.className = "status" + (kind ? " " + kind : "");
+    }
+  }
+
+  /* ---------- Employees side panel ---------- */
+  function setDrawer(open) {
+    const d = g("staffDrawer");
+    d.classList.toggle("open", open);
+    document.body.classList.toggle("staff-open", open);
+    g("staffHandle").setAttribute("aria-expanded", String(open));
+    try { localStorage.setItem("staffDrawerOpen", open ? "1" : "0"); } catch (e) { /* storage blocked: fine */ }
+    if (open) { renderStaff(); g("staffClose").focus(); } else if (document.activeElement && d.contains(document.activeElement)) g("staffHandle").focus();
+    if (user) setTimeout(renderLines, 250);          // the factory column changes width on wide screens
   }
 
   async function run(fn) {
@@ -571,6 +586,8 @@ const Factory = (() => {
       : `No employees yet. Workers speed up lines, researchers speed up the lab, salespeople raise car prices, and managers boost everyone.`));
     for (const n of f.news || []) sum.append(mk("p", "co-note neg", n));
 
+    g("staffCount").textContent = f.staff.length;
+    g("staffCompany").textContent = c ? `${c.ticker} · ${c.name}${can ? "" : ` (run by ${c.controllerName})`}` : "No company selected";
     const box = g("fStaff");
     if (!f.staff.length) box.replaceChildren(mk("div", "empty", "No one works here yet."));
     else box.replaceChildren(...f.staff.map((sf, i) => {
@@ -696,6 +713,10 @@ const Factory = (() => {
     });
     g("fBuild").addEventListener("click", () => run(buildLine));
     g("fCompany").addEventListener("change", (e) => watchFactory(e.target.value));
+    g("staffHandle").addEventListener("click", () => setDrawer(true));
+    g("staffClose").addEventListener("click", () => setDrawer(false));
+    g("staffBackdrop").addEventListener("click", () => setDrawer(false));
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && g("staffDrawer").classList.contains("open")) setDrawer(false); });
     renderRecipes();
     setInterval(() => { if (user && st.factory) renderStaff(); }, 15000);   // payday countdown + new candidates every 5 min
     setInterval(() => {
@@ -713,6 +734,11 @@ const Factory = (() => {
   function signIn(u) {
     signOut();
     user = u;
+    g("staffHandle").classList.remove("hidden");
+    let wasOpen = false;
+    try { wasOpen = localStorage.getItem("staffDrawerOpen") === "1"; } catch (e) { /* storage blocked */ }
+    // Reopen it only on wide screens, where it sits beside the factory instead of covering it
+    if (wasOpen && window.matchMedia("(min-width: 1100px)").matches) setTimeout(() => setDrawer(true), 300);
     unsubs.push(db.collection("companies").orderBy("createdAt", "asc").limit(100).onSnapshot((s) => {
       st.companies = s.docs.map((d) => d.data({ serverTimestamps: "estimate" }));
       if (!st.ticker || !company()) {
@@ -728,6 +754,11 @@ const Factory = (() => {
     if (factoryUnsub) factoryUnsub();
     factoryUnsub = null;
     user = null;
+    if (g("staffHandle")) {
+      g("staffHandle").classList.add("hidden");
+      g("staffDrawer").classList.remove("open");
+      document.body.classList.remove("staff-open");
+    }
     Object.assign(st, { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0 });
     if (g("fMsg")) { setMsg("", ""); renderAll(); }
   }

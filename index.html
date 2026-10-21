@@ -286,6 +286,50 @@
 
   .chip.glitch { color: #d9a3ff; border-color: rgba(190, 120, 255, 0.5); background: rgba(190, 120, 255, 0.12); font-weight: 700; }
   .chip.crew { color: var(--blue); border-color: rgba(90, 169, 255, 0.4); background: rgba(90, 169, 255, 0.1); }
+  /* Employees side panel */
+  .staff-handle {
+    position: fixed; left: 0; top: 50%; transform: translateY(-50%); z-index: 25;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 14px 8px; padding-left: max(8px, env(safe-area-inset-left, 0px));
+    background: var(--panel); color: var(--text); border: 1px solid var(--border); border-left: none;
+    border-radius: 0 10px 10px 0; box-shadow: 4px 0 20px rgba(0, 0, 0, 0.35); font-weight: 700; font-size: 13px;
+  }
+  .staff-handle:hover { color: var(--gold); }
+  .staff-handle-text { writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: 0.5px; }
+  .staff-count { min-width: 22px; padding: 2px 6px; border-radius: 99px; background: var(--gold-dim); color: var(--gold); font-size: 12px; text-align: center; }
+  .staff-drawer {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 30; width: min(400px, 92vw);
+    display: flex; flex-direction: column;
+    background: var(--panel); border-right: 1px solid var(--border); box-shadow: 8px 0 30px rgba(0, 0, 0, 0.45);
+    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+    transform: translateX(-102%); visibility: hidden; transition: transform 0.22s ease, visibility 0.22s;
+  }
+  .staff-drawer.open { transform: none; visibility: visible; }
+  .staff-drawer-head {
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+    padding: 18px 18px 12px; padding-left: max(18px, env(safe-area-inset-left, 0px)); border-bottom: 1px solid var(--border);
+  }
+  .staff-drawer-head h2 { margin: 0; font-size: 18px; }
+  .staff-co { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .staff-drawer-body { overflow-y: auto; padding: 8px 18px 24px; padding-left: max(18px, env(safe-area-inset-left, 0px)); flex: 1; }
+  .staff-drawer-body .status { min-height: 0; margin: 6px 0 0; }
+  .staff-drawer .sub-h { margin-top: 16px; }
+  .staff-drawer .co-sec .sub-h { margin-top: 0; }
+  .staff-drawer .f-person { grid-template-columns: 1fr; }
+  .staff-drawer .f-person-acts { justify-content: flex-start; }
+  .staff-backdrop { position: fixed; inset: 0; z-index: 29; background: rgba(0, 0, 0, 0.45); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+  body:not([data-tab="factory"]) .staff-handle,
+  body:not([data-tab="factory"]) .staff-drawer,
+  body:not([data-tab="factory"]) .staff-backdrop { display: none; }
+  body.staff-open .staff-handle { display: none; }
+  @media (max-width: 1099px) {
+    body.staff-open .staff-backdrop { opacity: 1; pointer-events: auto; }
+  }
+  /* Wide screens: slide the page over so the lines stay visible while you manage staff */
+  @media (min-width: 1100px) {
+    body.staff-open[data-tab="factory"] main { margin-left: 400px; margin-right: 0; max-width: none; padding-left: 24px; padding-right: 24px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .staff-drawer, .staff-backdrop { transition: none; } }
   .staff-grid { margin-top: 8px; }
   .sub-h { font-size: 14px; margin: 0 0 8px; color: var(--text); }
   .f-person { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -558,20 +602,6 @@
         </div>
       </div>
       <div class="card" style="margin-top: 16px">
-        <h2>Employees</h2>
-        <div id="fPayroll"></div>
-        <div class="ex-grid staff-grid">
-          <div>
-            <h3 class="sub-h">Your staff</h3>
-            <div id="fStaff"></div>
-          </div>
-          <div id="fPoolCard">
-            <h3 class="sub-h">Hire</h3>
-            <div id="fPool"></div>
-          </div>
-        </div>
-      </div>
-      <div class="card" style="margin-top: 16px">
         <h2>Research lab</h2>
         <p class="co-note" style="margin: -6px 0 12px">One project at a time, paid from the treasury. Robot research unlocks faster lines; upgrade each line from its card above.</p>
         <div id="fResearch"></div>
@@ -618,6 +648,32 @@
     </div>
   </section>
 </main>
+
+<!-- ===== Employees side panel (Factory tab) ===== -->
+<button class="staff-handle hidden" id="staffHandle" aria-controls="staffDrawer" aria-expanded="false">
+  <span class="staff-handle-text">Employees</span>
+  <span class="staff-count" id="staffCount">0</span>
+</button>
+<div class="staff-backdrop" id="staffBackdrop"></div>
+<aside class="staff-drawer" id="staffDrawer" aria-label="Employees">
+  <div class="staff-drawer-head">
+    <div>
+      <h2>Employees</h2>
+      <div class="staff-co" id="staffCompany"></div>
+    </div>
+    <button class="btn-ghost" id="staffClose">Close</button>
+  </div>
+  <div class="staff-drawer-body">
+    <div class="status" id="staffMsg"></div>
+    <div id="fPayroll"></div>
+    <h3 class="sub-h">Your staff</h3>
+    <div id="fStaff"></div>
+    <div class="co-sec" id="fPoolCard">
+      <h3 class="sub-h">Hire</h3>
+      <div id="fPool"></div>
+    </div>
+  </div>
+</aside>
 
 <!-- Firebase SDK v10 (compat mode) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>

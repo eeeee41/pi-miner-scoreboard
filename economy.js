@@ -595,6 +595,7 @@ const Economy = (() => {
   const TABS = ["mine", "wallet", "exchange", "stocks", "factory", "market"];
   function showTab(name) {
     if (!TABS.includes(name)) name = "mine";
+    document.body.dataset.tab = name;          // lets page-wide pieces (like the Employees panel) follow the tab
     for (const t of TABS) {
       g(`tab-${t}`).classList.toggle("hidden", t !== name);
       const b = g(`tabBtn-${t}`);
