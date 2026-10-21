@@ -284,7 +284,27 @@
   .f-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
   .f-table td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
 
+  .chip.robo { color: var(--gold); border-color: rgba(245, 185, 66, 0.4); background: var(--gold-dim); }
+  .f-upgrade { width: 100%; margin-top: 10px; padding: 9px; color: var(--gold); border-color: rgba(245, 185, 66, 0.4); }
+  .f-res { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .f-res:last-child { border-bottom: none; }
+  .f-res-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 14px; }
+  .f-res-info span { font-size: 13px; color: var(--muted); }
+  .f-res-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 160px; }
+  .f-res-side .progress { width: 160px; margin: 0; }
+  .f-res-left { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .f-res-side .btn-ghost { white-space: nowrap; }
+  .m-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 2px; border-bottom: 1px solid var(--border); }
+  .m-row:last-child { border-bottom: none; }
+  .m-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 14px; }
+  .m-info span { font-size: 12px; color: var(--muted); }
+  .m-buy { display: flex; gap: 6px; }
+  .m-buy input { width: 84px; font: inherit; font-size: 14px; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 8px; }
+
   @media (max-width: 760px) {
+    .f-res { grid-template-columns: 1fr; }
+    .f-res-side { align-items: stretch; min-width: 0; }
+    .f-res-side .progress { width: 100%; }
     .factory-grid, .kpis.four { grid-template-columns: 1fr; }
     .stocks-grid, .kpis { grid-template-columns: 1fr; }
     header { padding: 12px 16px; }
@@ -338,6 +358,7 @@
       <button class="tab" role="tab" id="tabBtn-exchange" data-tab="exchange" aria-selected="false">Exchange</button>
       <button class="tab" role="tab" id="tabBtn-stocks" data-tab="stocks" aria-selected="false">Stocks</button>
       <button class="tab" role="tab" id="tabBtn-factory" data-tab="factory" aria-selected="false">Factory</button>
+      <button class="tab" role="tab" id="tabBtn-market" data-tab="market" aria-selected="false">Market</button>
     </nav>
 
     <div id="tab-mine" role="tabpanel">
@@ -525,8 +546,48 @@
         </div>
       </div>
       <div class="card" style="margin-top: 16px">
+        <h2>Research lab</h2>
+        <p class="co-note" style="margin: -6px 0 12px">One project at a time, paid from the treasury. Robot research unlocks faster lines; upgrade each line from its card above.</p>
+        <div id="fResearch"></div>
+      </div>
+      <div class="card" style="margin-top: 16px">
         <h2>What you can make</h2>
         <div id="fRecipes"></div>
+      </div>
+    </div>
+
+    <!-- ===== Market (goods) ===== -->
+    <div id="tab-market" role="tabpanel" class="hidden">
+      <div class="card">
+        <label class="field market-pick" for="mCompany"><span>Trading for</span><select id="mCompany"></select></label>
+        <div id="mSummary"></div>
+        <div class="status" id="mMsg"></div>
+      </div>
+      <div class="ex-grid">
+        <div class="card">
+          <h2>Buy goods</h2>
+          <label class="field market-pick" for="mItem"><span>Item</span><select id="mItem"></select></label>
+          <p class="co-note" id="mPrice"></p>
+          <div id="mListings" style="margin-top: 10px"></div>
+        </div>
+        <div class="card">
+          <h2>Sell from your warehouse</h2>
+          <div id="mSellBox">
+            <div class="co-form">
+              <label class="field" for="mSellItem"><span>Item</span><select id="mSellItem"></select></label>
+              <label class="field" for="mSellQty"><span>How many</span><input id="mSellQty" type="number" min="1" step="1" value="10" /></label>
+              <label class="field" for="mSellPrice"><span>Price each ($)</span><input id="mSellPrice" type="number" min="0.01" step="0.01" value="6.00" /></label>
+            </div>
+            <p class="co-note" id="mHave"></p>
+            <p class="co-note" id="mFee"></p>
+            <button class="btn-primary sell" id="mSell">List for sale</button>
+            <p class="co-note">Anything unsold after 10 days is bought by the market at 80% of the lower of your price and the recent average sale price (or the materials cost, if it has never sold).</p>
+          </div>
+          <div class="co-sec">
+            <h3>Your listings</h3>
+            <div id="mMine"></div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -542,6 +603,8 @@
 <script src="companies.js"></script>
 <!-- Phase 3: production -->
 <script src="factory.js"></script>
+<!-- Phase 4: marketplace for goods -->
+<script src="market.js"></script>
 
 <!-- Mining on the shared Pi blockchain + sign-in (loads last) -->
 <script src="miner.js"></script>

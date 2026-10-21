@@ -52,6 +52,38 @@ const Factory = (() => {
     car:         { inputs: { engine: 1, tire: 4, steel: 6, glass: 2, electronics: 2 }, secs: 600, sellsFor: CAR_PRICE }
   };
 
+  // Research: real-time projects paid from the treasury, one at a time per company
+  const RESEARCH = {
+    robots1: { name: "Robot arms",              cost: 200000,  hours: 0.5, needs: null,      does: "Lets you fit robot arms to production lines: 1.5× faster" },
+    robots2: { name: "Assembly robots",         cost: 800000,  hours: 2,   needs: "robots1", does: "Lets you fit assembly robots: 2.5× faster" },
+    robots3: { name: "Automated car lines",     cost: 2000000, hours: 6,   needs: "robots2", does: "Lets you fully automate a line: 4× faster" },
+    alloy1:  { name: "Cheaper alloys",          cost: 300000,  hours: 1,   needs: null,      does: "Steel needs 1 iron ore instead of 2" },
+    alloy2:  { name: "Lightweight alloys",      cost: 1000000, hours: 3,   needs: "alloy1",  does: "Cars need 4 steel instead of 6" },
+    labs:    { name: "Better research methods", cost: 500000,  hours: 1,   needs: null,      does: "All research after this finishes twice as fast" }
+  };
+  // Robot tiers a line can be upgraded to (each needs its research first)
+  const ROBOTS = [
+    { name: "Workers only",    mult: 1 },
+    { name: "Robot arms",      mult: 1.5, cost: 150000,  needs: "robots1" },
+    { name: "Assembly robots", mult: 2.5, cost: 500000,  needs: "robots2" },
+    { name: "Fully automated", mult: 4,   cost: 1200000, needs: "robots3" }
+  ];
+  // What an item's materials cost at supplier prices (used to price never-sold items)
+  const BASE_VALUE = {};
+  const valueOf = (k) => BASE_VALUE[k] ?? (BASE_VALUE[k] = ITEMS[k].price ||
+    Object.entries(RECIPES[k].inputs).reduce((a, [i, n]) => a + n * valueOf(i), 0));
+  Object.keys(ITEMS).forEach(valueOf);
+
+  // Recipe inputs after research
+  function inputsFor(recipe, research = {}) {
+    const inp = { ...RECIPES[recipe].inputs };
+    if (recipe === "steel" && research.alloy1) inp.iron = 1;
+    if (recipe === "car" && research.alloy2) inp.steel = 4;
+    return inp;
+  }
+  const lineMult = (line) => ROBOTS[line.robots || 0].mult;
+  const unitMs = (line) => (RECIPES[line.recipe].secs * 1000) / lineMult(line);
+
   let fb = null, db = null, user = null, unsubs = [], factoryUnsub = null;
   const st = { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0 };
 
@@ -67,8 +99,12 @@ const Factory = (() => {
   const errText = (e) => Economy.errText(e);
   const companyRef = (t) => db.collection("companies").doc(t);
   const factoryRef = (t) => companyRef(t).collection("factory").doc("main");
-  const blank = () => ({ inventory: {}, lines: [], carsSold: 0, revenue: 0 });
-  const clone = (f) => JSON.parse(JSON.stringify({ inventory: f.inventory || {}, lines: f.lines || [], carsSold: f.carsSold || 0, revenue: f.revenue || 0 }));
+  const blank = () => ({ inventory: {}, lines: [], carsSold: 0, revenue: 0, research: {}, project: null });
+  // Every writer of the factory doc goes through this, so no field is ever dropped
+  const clone = (f) => JSON.parse(JSON.stringify({
+    inventory: f.inventory || {}, lines: f.lines || [], carsSold: f.carsSold || 0, revenue: f.revenue || 0,
+    research: f.research || {}, project: f.project || null
+  }));
   const company = () => st.companies.find((c) => c.ticker === st.ticker);
   const iControl = () => { const c = company(); return !!(c && user && c.controller === user.uid); };
   const fmtDur = (s) => {
@@ -78,14 +114,18 @@ const Factory = (() => {
     return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
   };
   const qtyName = (k, n) => `${n.toLocaleString()} ${n === 1 ? ITEMS[k].one : ITEMS[k].many}`;
-  const inputsText = (r) => Object.entries(RECIPES[r].inputs).map(([k, n]) => qtyName(k, n)).join(" + ");
+  const inputsText = (r, research) => Object.entries(inputsFor(r, research)).map(([k, n]) => qtyName(k, n)).join(" + ");
 
   // Count every unit finished by `now`. Cars are sold on the spot; returns the Cash they brought in.
   function settle(f, now) {
     let income = 0;
+    if (f.project && now >= f.project.endsAt) {          // finished research
+      f.research[f.project.key] = true;
+      f.project = null;
+    }
     for (const line of f.lines) {
       if (!line.queued || !line.startedAt) continue;
-      const per = RECIPES[line.recipe].secs * 1000;
+      const per = unitMs(line);
       const n = Math.min(line.queued, Math.floor((now - line.startedAt) / per));
       if (n <= 0) continue;
       line.queued -= n;
@@ -146,8 +186,11 @@ const Factory = (() => {
   });
 
   const queue = (i, n) => act((f, treasury, now) => {
-    const line = f.lines[i], r = RECIPES[line.recipe];
+    const line = f.lines[i];
     if (line.queued + n > MAX_QUEUE) throw new Error(`A line's queue holds at most ${MAX_QUEUE.toLocaleString()} units.`);
+    // A queue keeps the inputs it started with, so a refund always matches what was taken
+    if (!line.queued || !line.inputs) line.inputs = inputsFor(line.recipe, f.research);
+    const r = { inputs: line.inputs };
     const short = Object.entries(r.inputs).filter(([k, q]) => (f.inventory[k] || 0) < q * n)
       .map(([k, q]) => `${(q * n - (f.inventory[k] || 0)).toLocaleString()} more ${q * n - (f.inventory[k] || 0) === 1 ? ITEMS[k].one : ITEMS[k].many}`);
     if (short.length) throw new Error(`Not enough in the warehouse: you need ${short.join(", ")}.`);
@@ -158,12 +201,37 @@ const Factory = (() => {
   });
 
   const clearQueue = (i) => act((f) => {
-    const line = f.lines[i], r = RECIPES[line.recipe];
+    const line = f.lines[i], r = { inputs: line.inputs || inputsFor(line.recipe) };
     if (!line.queued) return { msg: "That line's queue is already empty." };
     for (const [k, q] of Object.entries(r.inputs)) f.inventory[k] = (f.inventory[k] || 0) + q * line.queued;
     const n = line.queued;
     line.queued = 0; line.startedAt = null;
     return { msg: `✓ Cleared ${n.toLocaleString()} unmade units from line ${i + 1}; their materials are back in the warehouse.` };
+  });
+
+  const startResearch = (key) => act((f, treasury, now) => {
+    const r = RESEARCH[key];
+    if (f.research[key]) throw new Error(`${r.name} is already researched.`);
+    if (f.project) throw new Error(`Your lab is busy with ${RESEARCH[f.project.key].name}. One project at a time.`);
+    if (r.needs && !f.research[r.needs]) throw new Error(`Research ${RESEARCH[r.needs].name} first.`);
+    if (treasury < r.cost) throw new Error(`${r.name} costs ${fmtCash(r.cost)}; the treasury has ${fmtCash(treasury)}.`);
+    const ms = (r.hours * 3600000) / (f.research.labs ? 2 : 1);
+    f.project = { key, startedAt: now, endsAt: now + ms };
+    return { treasury: treasury - r.cost, msg: `✓ Started researching ${r.name}. Done in ${fmtDur(ms / 1000)}.` };
+  });
+
+  const upgradeRobots = (i) => act((f, treasury, now) => {
+    const line = f.lines[i], tier = (line.robots || 0) + 1, next = ROBOTS[tier];
+    if (!next) throw new Error(`Line ${i + 1} is already fully automated.`);
+    if (!f.research[next.needs]) throw new Error(`Research ${RESEARCH[next.needs].name} first.`);
+    if (treasury < next.cost) throw new Error(`${next.name} cost ${fmtCash(next.cost)}; the treasury has ${fmtCash(treasury)}.`);
+    // Keep the unit in progress at the same percent done, then carry on at the new speed
+    if (line.queued && line.startedAt) {
+      const old = unitMs(line), into = now - line.startedAt;
+      line.robots = tier;
+      line.startedAt = now - into * (unitMs(line) / old);
+    } else line.robots = tier;
+    return { treasury: treasury - next.cost, msg: `✓ Line ${i + 1} now has ${next.name.toLowerCase()}: ${next.mult}× speed.` };
   });
 
   // Count finished units (and bank car sales) without changing anything else.
@@ -255,8 +323,13 @@ const Factory = (() => {
       } else {
         what = mk("span", "chip", `makes ${ITEMS[line.recipe].many}`);
       }
-      head.append(name, what, mk("span", "f-made", `${(line.made || 0).toLocaleString()} made`));
-      const recipe = mk("div", "f-recipe-text", `${inputsText(line.recipe)} → 1 ${ITEMS[line.recipe].one} · ${fmtDur(r.secs)} each${r.sellsFor ? ` · sold instantly for ${fmtCash(r.sellsFor)}` : ""}`);
+      const tier = ROBOTS[line.robots || 0];
+      const robo = mk("span", "chip" + (line.robots ? " robo" : ""), line.robots ? `${tier.name} · ${tier.mult}×` : "Workers only");
+      head.append(name, what, robo, mk("span", "f-made", `${(line.made || 0).toLocaleString()} made`));
+      const inputs = line.queued && line.inputs
+        ? Object.entries(line.inputs).map(([k, n]) => qtyName(k, n)).join(" + ")
+        : inputsText(line.recipe, f.research);
+      const recipe = mk("div", "f-recipe-text", `${inputs} → 1 ${ITEMS[line.recipe].one} · ${fmtDur(unitMs(line) / 1000)} each${r.sellsFor ? ` · sold instantly for ${fmtCash(r.sellsFor)}` : ""}`);
       const bar = mk("div", "progress"); const fill = mk("div"); fill.dataset.line = i; bar.append(fill);
       const status = mk("div", "f-status"); status.dataset.line = i;
       card.append(head, recipe, bar, status);
@@ -275,6 +348,12 @@ const Factory = (() => {
         clear.addEventListener("click", () => run(() => clearQueue(i)));
         row.append(l, add, clear);
         card.append(row);
+        const next = ROBOTS[(line.robots || 0) + 1];
+        if (next && f.research[next.needs]) {
+          const up = mk("button", "btn-ghost f-upgrade", `Upgrade to ${next.name.toLowerCase()} (${next.mult}× speed) · ${fmtCash(next.cost)}`);
+          up.addEventListener("click", () => run(() => upgradeRobots(i)));
+          card.append(up);
+        }
       }
       return card;
     }));
@@ -286,11 +365,18 @@ const Factory = (() => {
     if (!st.factory) return;
     const now = Date.now();
     const { f } = projected();
+    const rf = document.querySelector('#fResearch .progress > div[data-research]');
+    const rl = document.querySelector('#fResearch .f-res-left[data-research]');
+    if (f.project && rf && rl) {
+      rf.style.width = Math.min(100, ((now - f.project.startedAt) / (f.project.endsAt - f.project.startedAt)) * 100) + "%";
+      rl.textContent = `done in ${fmtDur((f.project.endsAt - now) / 1000)}`;
+    } else if (!f.project && rf) renderResearch();   // just finished
+
     f.lines.forEach((line, i) => {
       const fill = document.querySelector(`#fLines .progress > div[data-line="${i}"]`);
       const status = document.querySelector(`#fLines .f-status[data-line="${i}"]`);
       if (!fill || !status) return;
-      const per = RECIPES[line.recipe].secs * 1000;
+      const per = unitMs(line);
       if (!line.queued) {
         fill.style.width = "0%";
         status.textContent = "Idle. Queue some units to start.";
@@ -300,6 +386,38 @@ const Factory = (() => {
       fill.style.width = Math.min(100, (into / per) * 100) + "%";
       status.textContent = `${line.queued.toLocaleString()} in the queue · next one in ${fmtDur((per - into) / 1000)} · all done in ${fmtDur((line.queued * per - into) / 1000)}`;
     });
+  }
+
+  function renderResearch() {
+    const box = g("fResearch");
+    const { f } = projected();
+    const can = iControl();
+    box.replaceChildren(...Object.entries(RESEARCH).map(([key, r]) => {
+      const row = mk("div", "f-res");
+      const done = !!f.research[key];
+      const active = f.project && f.project.key === key;
+      const locked = r.needs && !f.research[r.needs];
+      const ms = (r.hours * 3600000) / (f.research.labs && key !== "labs" ? 2 : 1);
+      const info = mk("div", "f-res-info");
+      info.append(mk("b", null, r.name), mk("span", null, r.does));
+      const side = mk("div", "f-res-side");
+      if (done) side.append(mk("span", "tag saved", "✓ researched"));
+      else if (active) {
+        const bar = mk("div", "progress"); const fill = mk("div"); fill.dataset.research = "1"; bar.append(fill);
+        const left = mk("span", "f-res-left"); left.dataset.research = "1";
+        side.append(bar, left);
+      } else if (locked) side.append(mk("span", "tag pend", `needs ${RESEARCH[r.needs].name}`));
+      else if (can) {
+        const b = mk("button", "btn-ghost", `Research · ${fmtCash(r.cost)} · ${fmtDur(ms / 1000)}`);
+        b.disabled = !!f.project;
+        if (f.project) b.title = "The lab is busy with another project";
+        b.addEventListener("click", () => run(() => startResearch(key)));
+        side.append(b);
+      } else side.append(mk("span", "tag pend", `${fmtCash(r.cost)} · ${fmtDur(ms / 1000)}`));
+      row.append(info, side);
+      return row;
+    }));
+    tick();
   }
 
   function renderWarehouse() {
@@ -321,10 +439,11 @@ const Factory = (() => {
   }
 
   function renderRecipes() {
+    const research = st.factory ? projected().f.research : {};
     const rows = Object.keys(RECIPES).map((k) => {
       const r = RECIPES[k];
       const tr = mk("tr");
-      tr.append(mk("td", null, ITEMS[k].name), mk("td", null, inputsText(k)), mk("td", "num", fmtDur(r.secs)),
+      tr.append(mk("td", null, ITEMS[k].name), mk("td", null, inputsText(k, research)), mk("td", "num", fmtDur(r.secs)),
         mk("td", null, r.sellsFor ? `Sold instantly to everyday buyers for ${fmtCash(r.sellsFor)}` : "Kept in the warehouse"));
       return tr;
     });
@@ -336,10 +455,10 @@ const Factory = (() => {
     const tbody = mk("tbody"); tbody.append(...rows);
     table.append(thead, tbody);
     const wrap = mk("div", "f-table-wrap"); wrap.append(table);
-    g("fRecipes").replaceChildren(wrap, mk("p", "co-note", `Raw materials from suppliers: ${raw}. A car's materials cost about $136, so each car earns about $114.`));
+    g("fRecipes").replaceChildren(wrap, mk("p", "co-note", `Raw materials from suppliers: ${raw}. A car's materials cost about $136, so each car earns about $114. Times are for a line without robots; this company's research is already counted in the recipes.`));
   }
 
-  function renderAll() { renderPicker(); renderSummary(); renderLines(); renderWarehouse(); }
+  function renderAll() { renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderRecipes(); }
 
   function watchFactory(ticker) {
     if (factoryUnsub) factoryUnsub();
@@ -408,5 +527,5 @@ const Factory = (() => {
     }
   }
 
-  return { init, signIn, signOut, upkeep, RECIPES, ITEMS };
+  return { init, signIn, signOut, upkeep, RECIPES, ITEMS, RAW, BASE_VALUE, clone, blank, qtyName };
 })();

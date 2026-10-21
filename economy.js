@@ -294,8 +294,9 @@ const Economy = (() => {
   async function upkeep() {
     if (!user) return;
     try { await settleExpired(); } catch (err) { console.warn("Upkeep:", err); }
-    if (window.Factory) await Factory.upkeep().catch((err) => console.warn("Factory upkeep:", err));   // bank car sales first
-    if (window.Companies) await Companies.upkeep().catch((err) => console.warn("Company upkeep:", err));
+    if (typeof Factory !== "undefined") await Factory.upkeep().catch((err) => console.warn("Factory upkeep:", err));   // bank car sales first
+    if (typeof Companies !== "undefined") await Companies.upkeep().catch((err) => console.warn("Company upkeep:", err));
+    if (typeof Market !== "undefined") await Market.upkeep().catch((err) => console.warn("Market upkeep:", err));
   }
 
   /* ---------- order form ---------- */
@@ -591,7 +592,7 @@ const Economy = (() => {
   }
 
   /* ---------- tabs ---------- */
-  const TABS = ["mine", "wallet", "exchange", "stocks", "factory"];
+  const TABS = ["mine", "wallet", "exchange", "stocks", "factory", "market"];
   function showTab(name) {
     if (!TABS.includes(name)) name = "mine";
     for (const t of TABS) {
