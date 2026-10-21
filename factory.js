@@ -94,7 +94,11 @@ const Factory = (() => {
   };
   // Hard-coded staff: always on the payroll of these companies, for free, and can't be let go or trained
   const FIXED_STAFF = {
-    TSLA: [{ id: "missingno", name: "MissingNo.", role: "glitch", skill: 5, wage: 0, line: null, fixed: true, outputMult: 5 }]
+    // Six MissingNo.s: the original plus #2–#6
+    TSLA: ["", 2, 3, 4, 5, 6].map((n) => ({
+      id: n ? `missingno${n}` : "missingno", name: n ? `MissingNo. #${n}` : "MissingNo.",
+      role: "glitch", skill: 5, wage: 0, line: null, fixed: true, outputMult: 5
+    }))
   };
   const POOL_MS = 5 * 60 * 1000;      // a new batch of candidates every 5 minutes
   const wageFor = (role, skill) => Math.round(ROLES[role].base * (1 + 0.5 * (skill - 1)));
@@ -128,7 +132,7 @@ const Factory = (() => {
   function addFixedStaff(f, ticker) {
     for (const p of FIXED_STAFF[ticker] || []) {
       const have = f.staff.find((s) => s.id === p.id);
-      if (!have) f.staff.unshift({ ...p, hiredAt: Date.now() });
+      if (!have) f.staff.splice(f.staff.filter((x) => x.fixed).length, 0, { ...p, hiredAt: Date.now() });
       else Object.assign(have, { ...p, line: have.line, hiredAt: have.hiredAt });
     }
     return f;
