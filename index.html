@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pi Miner Scoreboard</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121820;
+    --panel-2: #18202b;
+    --border: #253041;
+    --text: #e7edf5;
+    --muted: #8a97a8;
+    --gold: #f5b942;
+    --gold-soft: #ffd987;
+    --gold-dim: rgba(245, 185, 66, 0.14);
+    --green: #3ccf7a;
+    --red: #ff6b6b;
+    --blue: #5aa9ff;
+    --radius: 14px;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh;
+    background: radial-gradient(1100px 560px at 85% -10%, rgba(245, 185, 66, 0.09), transparent 60%), var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .hidden { display: none !important; }
+  button { font: inherit; cursor: pointer; border: none; }
+  button:disabled { cursor: not-allowed; opacity: 0.55; }
+  code { font-family: var(--mono); background: var(--panel-2); border: 1px solid var(--border); padding: 1px 6px; border-radius: 6px; color: var(--gold); }
+
+  /* ---------- Header ---------- */
+  header {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(11, 15, 20, 0.85);
+    backdrop-filter: blur(8px);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: 0.2px; }
+  .brand-mark {
+    width: 34px; height: 34px; border-radius: 9px;
+    display: grid; place-items: center;
+    background: var(--gold-dim); color: var(--gold);
+    font: 700 20px Georgia, "Times New Roman", serif;
+  }
+  .brand-mark.big { width: 64px; height: 64px; border-radius: 18px; font-size: 36px; margin: 0 auto; }
+  .user-chip { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .user-chip img { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; }
+  .user-chip .name { font-size: 14px; color: var(--muted); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btn-ghost {
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; font-size: 13px;
+  }
+  .btn-ghost:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 28px 20px 64px; }
+
+  .banner {
+    background: rgba(255, 107, 107, 0.08);
+    border: 1px solid rgba(255, 107, 107, 0.35);
+    color: #ffc9c9;
+    border-radius: var(--radius);
+    padding: 14px 18px; margin-bottom: 20px; font-size: 14px;
+  }
+  .banner strong { color: #fff; }
+
+  /* ---------- Login ---------- */
+  .login-card {
+    max-width: 460px; margin: 9vh auto 0; text-align: center;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 20px; padding: 40px 32px;
+  }
+  .login-card h1 { margin: 18px 0 8px; font-size: 28px; line-height: 1.2; }
+  .login-card p { color: var(--muted); margin: 0 0 28px; }
+  .btn-login {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: #fff; color: #1b1b1b; font-weight: 600;
+    padding: 12px 24px; border-radius: 999px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    transition: transform 0.08s ease;
+  }
+  .btn-login:hover:not(:disabled) { transform: translateY(-1px); }
+  .btn-login svg { width: 20px; height: 20px; }
+  .login-error { color: var(--red); font-size: 14px; margin-top: 16px; min-height: 20px; }
+
+  /* ---------- Dashboard ---------- */
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; min-width: 0; }
+  .card h2 { font-size: 15px; margin: 0 0 14px; color: var(--muted); font-weight: 600; }
+  .stat-label { font-size: 13px; color: var(--muted); }
+  .stat-value { font-size: 42px; font-weight: 750; font-variant-numeric: tabular-nums; margin-top: 4px; line-height: 1.15; }
+  .stat-value.gold { color: var(--gold); }
+  .stat-of { font-size: 22px; color: var(--muted); font-weight: 600; }
+  .stat-sub { font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .progress { height: 8px; background: var(--panel-2); border-radius: 99px; overflow: hidden; margin-top: 14px; }
+  .progress > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--gold), var(--gold-soft)); transition: width 0.2s ease; }
+
+  .mine { margin-top: 16px; display: flex; flex-direction: column; align-items: center; text-align: center; padding: 34px 20px 26px; }
+  .btn-mine {
+    width: 176px; height: 176px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, var(--gold-soft), var(--gold) 55%, #c98a12);
+    color: #2a1c00; font-size: 20px; font-weight: 800; letter-spacing: 0.3px;
+    box-shadow: 0 12px 44px rgba(245, 185, 66, 0.25), inset 0 -6px 0 rgba(0, 0, 0, 0.15);
+    transition: transform 0.08s ease, box-shadow 0.2s ease;
+  }
+  .btn-mine:hover:not(:disabled) { box-shadow: 0 14px 54px rgba(245, 185, 66, 0.38), inset 0 -6px 0 rgba(0, 0, 0, 0.15); }
+  .btn-mine:active:not(:disabled) { transform: scale(0.95); }
+  .btn-mine.busy { animation: pulse 0.5s ease-in-out infinite alternate; }
+  @keyframes pulse { to { transform: scale(0.97); filter: brightness(1.1); } }
+  .mine-target { margin-top: 20px; font-size: 14px; color: var(--muted); }
+  .mine-meta { font-family: var(--mono); font-size: 13px; color: var(--muted); margin-top: 8px; min-height: 20px; overflow-wrap: anywhere; }
+  .status { margin-top: 10px; font-size: 14px; min-height: 22px; }
+  .status.ok { color: var(--green); }
+  .status.err { color: var(--red); }
+  .status.info { color: var(--blue); }
+  #retryBtn { margin-top: 8px; }
+
+  .lower { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; margin-top: 16px; }
+
+  .block {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; font-family: var(--mono); font-size: 12px;
+  }
+  .block + .block { margin-top: 8px; }
+  .block-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); margin-bottom: 4px; }
+  .block-head b { color: var(--text); font-size: 13px; }
+  .tag { font-family: var(--sans); font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 99px; }
+  .tag.unsaved { background: var(--gold-dim); color: var(--gold); }
+  .tag.saved { background: rgba(60, 207, 122, 0.14); color: var(--green); }
+  .hash-line { display: flex; gap: 8px; min-width: 0; }
+  .hash-line .k { color: var(--muted); flex: none; width: 34px; }
+  .hash { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .hash .z { color: var(--gold); font-weight: 700; }
+  .empty { color: var(--muted); font-size: 14px; padding: 6px 0; }
+
+  .lb-row {
+    display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: center;
+    padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 14px;
+  }
+  .lb-row:last-child { border-bottom: none; }
+  .lb-rank { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .lb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lb-coins { font-variant-numeric: tabular-nums; font-weight: 650; }
+  .lb-row.me .lb-name, .lb-row.me .lb-coins { color: var(--gold); }
+
+  @media (max-width: 760px) {
+    header { padding: 12px 16px; }
+    .brand span { display: none; }
+    main { padding: 20px 16px 48px; }
+    .stats, .lower { grid-template-columns: 1fr; }
+    .stat-value { font-size: 34px; }
+    .user-chip .name { max-width: 110px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><div class="brand-mark">π</div><span>Pi Miner Scoreboard</span></div>
+  <div class="user-chip hidden" id="userChip">
+    <img id="userPhoto" alt="" referrerpolicy="no-referrer" />
+    <span class="name" id="userName"></span>
+    <button class="btn-ghost" id="signOutBtn">Sign out</button>
+  </div>
+</header>
+
+<main>
+  <div class="banner hidden" id="configBanner">
+    <strong>Firebase isn't configured yet.</strong> Open <code>index.html</code>, find the
+    <code>firebaseConfig</code> block near the bottom, and paste in the values from
+    Firebase Console → Project settings → Your apps → Web app.
+  </div>
+
+  <!-- ===== Signed-out view ===== -->
+  <section id="loginView" class="login-card">
+    <div class="brand-mark big">π</div>
+    <h1>Mine blocks. Bank coins.</h1>
+    <p>Solve SHA-256 proof-of-work puzzles right in your browser. Every 50 blocks you solve are written to the cloud as +50 coins.</p>
+    <button class="btn-login" id="loginBtn">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2.5" y="5" width="19" height="14" rx="2.5" stroke="#1b1b1b" stroke-width="1.8"/>
+        <path d="M3.5 6.5 12 13l8.5-6.5" stroke="#1b1b1b" stroke-width="1.8" stroke-linejoin="round"/>
+      </svg>
+      Log In with Gmail
+    </button>
+    <div class="login-error" id="loginError"></div>
+  </section>
+
+  <!-- ===== Signed-in dashboard ===== -->
+  <section id="dashboard" class="hidden">
+    <div class="stats">
+      <div class="card">
+        <div class="stat-label">Local Unsaved Counter (Current Batch/50)</div>
+        <div class="stat-value"><span id="batchCount">0</span><span class="stat-of" id="batchOf"> / 50</span></div>
+        <div class="progress"><div id="batchBar"></div></div>
+        <div class="stat-sub">Held in this tab's memory — nothing is sent until the batch is full.</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Total Lifetime Coins Saved to Cloud Database</div>
+        <div class="stat-value gold" id="cloudCoins">…</div>
+        <div class="stat-sub" id="cloudSub"></div>
+      </div>
+    </div>
+
+    <div class="card mine">
+      <button class="btn-mine" id="mineBtn"><span id="mineLabel">Mine Block</span></button>
+      <div class="mine-target" id="mineTarget"></div>
+      <div class="mine-meta" id="mineMeta">Click to search for a valid nonce.</div>
+      <div class="status" id="status"></div>
+      <button class="btn-ghost hidden" id="retryBtn">Retry sync</button>
+    </div>
+
+    <div class="lower">
+      <div class="card">
+        <h2>Recent blocks</h2>
+        <div id="chain"><div class="empty">No blocks yet this session.</div></div>
+      </div>
+      <div class="card">
+        <h2>Top miners</h2>
+        <div id="board"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Firebase SDK v10 (compat mode) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<script>
+/* =====================================================================
+   1. FIREBASE CONFIG — replace with your Web App values
+      (Firebase Console → Project settings → Your apps → SDK setup)
+   ===================================================================== */
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
+/* =====================================================================
+   2. GAME SETTINGS
+   ===================================================================== */
+const DIFFICULTY = 1;          // number of leading "0" hex characters a hash needs
+const BATCH_SIZE = 50;         // blocks cached locally before one cloud write
+const COINS_PER_BATCH = 50;    // coins credited per batch
+const COOLDOWN_MS = 10000;     // minimum gap between batch writes — keep in sync with firestore.rules
+const RECENT_LIMIT = 12;       // blocks shown in the "Recent blocks" list
+const GENESIS_HASH = "0".repeat(64);
+
+/* =====================================================================
+   3. STATE
+   ===================================================================== */
+const state = {
+  session: 0,                  // bumps on sign-in/out so stale async work is discarded
+  user: null,
+  localBatch: [],              // mined, unsaved blocks — in-memory only
+  recent: [],
+  tip: { index: 0, hash: GENESIS_HASH },
+  sessionBlocks: 0,
+  mining: false,
+  saving: false,
+  retryTimer: null,
+  retryPending: false,
+  cloud: { coins: 0, batches: 0, lastBatchAtMs: 0, loaded: false }
+};
+let auth = null, db = null, unsubUser = null, unsubBoard = null;
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+
+/* =====================================================================
+   4. PROOF-OF-WORK ENGINE (SHA-256 via Web Crypto)
+   ===================================================================== */
+async function sha256Hex(message) {
+  const bytes = new TextEncoder().encode(message);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function mineBlock(uid) {
+  const index = state.tip.index + 1;
+  const prevHash = state.tip.hash;
+  const timestamp = Date.now();
+  const data = `${uid}|reward:1`;
+  const target = "0".repeat(DIFFICULTY);
+  const t0 = performance.now();
+
+  let nonce = 0;
+  let hash = "";
+  for (;;) {
+    hash = await sha256Hex(`${index}|${prevHash}|${timestamp}|${data}|${nonce}`);
+    if (hash.startsWith(target)) break;
+    nonce++;
+    if (nonce % 5000 === 0) {
+      // Let the page repaint on higher difficulties
+      $("mineMeta").textContent = `Searching… nonce ${nonce.toLocaleString()}`;
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
+  return {
+    index, timestamp, prevHash, nonce, hash,
+    attempts: nonce + 1,
+    ms: performance.now() - t0,
+    saved: false
+  };
+}
+
+/* =====================================================================
+   5. MINING + BATCHED CLOUD SAVE
+   ===================================================================== */
+async function onMineClick() {
+  if (!state.user || state.mining || state.saving || state.localBatch.length >= BATCH_SIZE) return;
+  const session = state.session;
+  state.mining = true;
+  render();
+
+  let block;
+  try {
+    block = await mineBlock(state.user.uid);
+  } finally {
+    if (session === state.session) state.mining = false;
+  }
+  if (session !== state.session) return;
+
+  state.tip = { index: block.index, hash: block.hash };
+  state.localBatch.push(block);              // cached locally — no Firebase call here
+  state.recent.unshift(block);
+  if (state.recent.length > RECENT_LIMIT) state.recent.length = RECENT_LIMIT;
+  state.sessionBlocks++;
+
+  $("mineMeta").textContent =
+    `Block #${block.index} solved · nonce ${block.nonce.toLocaleString()} · ` +
+    `${block.attempts.toLocaleString()} hash${block.attempts === 1 ? "" : "es"} · ${block.ms.toFixed(1)} ms`;
+  render();
+
+  if (state.localBatch.length >= BATCH_SIZE) saveBatch();
+}
+
+function waitForCooldown(ms, session) {
+  return new Promise((resolve) => {
+    const end = Date.now() + ms;
+    const tick = () => {
+      if (session !== state.session) return resolve();
+      const left = end - Date.now();
+      if (left <= 0) return resolve();
+      setStatus(`Batch full — anti-spam cooldown, syncing in ${Math.ceil(left / 1000)}s…`, "info");
+      setTimeout(tick, 250);
+    };
+    tick();
+  });
+}
+
+async function saveBatch(attempt = 1) {
+  if (!state.user || state.saving || state.localBatch.length < BATCH_SIZE) return;
+  clearTimeout(state.retryTimer);
+  state.retryPending = false;
+  const session = state.session;
+  const user = state.user;
+  state.saving = true;
+  render();
+
+  try {
+    const wait = state.cloud.lastBatchAtMs + COOLDOWN_MS + 500 - Date.now();
+    if (wait > 0) await waitForCooldown(wait, session);
+    if (session !== state.session) return;
+
+    setStatus(`Writing batch of ${BATCH_SIZE} blocks to Firestore…`, "info");
+    const ref = db.collection("users").doc(user.uid);
+    const displayName = (user.displayName || "Anonymous Miner").slice(0, 40);
+
+    // One atomic transaction credits the whole batch
+    const newTotal = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const now = firebase.firestore.FieldValue.serverTimestamp();
+      if (!snap.exists) {
+        tx.set(ref, { displayName, coins: COINS_PER_BATCH, batches: 1, lastBatchAt: now, createdAt: now });
+        return COINS_PER_BATCH;
+      }
+      const d = snap.data();
+      const coins = (d.coins || 0) + COINS_PER_BATCH;
+      tx.update(ref, { displayName, coins, batches: (d.batches || 0) + 1, lastBatchAt: now });
+      return coins;
+    });
+
+    if (session !== state.session) return;
+    const savedBlocks = state.localBatch.splice(0, BATCH_SIZE);
+    savedBlocks.forEach((b) => { b.saved = true; });
+    state.cloud.coins = newTotal;
+    state.cloud.lastBatchAtMs = Date.now();
+    setStatus(`✓ Batch saved · +${COINS_PER_BATCH} coins credited to your profile`, "ok");
+  } catch (err) {
+    if (session !== state.session) return;
+    if (err.code === "permission-denied" && attempt < 3) {
+      // Usually the server-side cooldown (clock drift). Blocks stay cached; try again shortly.
+      setStatus(`Server cooldown not finished — retrying (${attempt}/2)…`, "info");
+      state.retryPending = true;
+      state.retryTimer = setTimeout(() => saveBatch(attempt + 1), 4000);
+    } else {
+      setStatus(`Sync failed: ${dbErrorMessage(err)} Your ${BATCH_SIZE} blocks are still cached.`, "err");
+    }
+  } finally {
+    if (session === state.session) {
+      state.saving = false;
+      render();
+    }
+  }
+}
+
+/* =====================================================================
+   6. RENDERING
+   ===================================================================== */
+function setStatus(text, kind) {
+  const s = $("status");
+  s.textContent = text;
+  s.className = "status" + (kind ? " " + kind : "");
+}
+
+function render() {
+  const cached = Math.min(state.localBatch.length, BATCH_SIZE);
+  const full = state.localBatch.length >= BATCH_SIZE;
+
+  $("batchCount").textContent = cached;
+  $("batchBar").style.width = (cached / BATCH_SIZE) * 100 + "%";
+  $("cloudCoins").textContent = state.cloud.loaded ? state.cloud.coins.toLocaleString() : "…";
+  $("cloudSub").textContent =
+    `${state.cloud.batches.toLocaleString()} batch${state.cloud.batches === 1 ? "" : "es"} saved · ` +
+    `${state.sessionBlocks.toLocaleString()} block${state.sessionBlocks === 1 ? "" : "s"} mined this session`;
+
+  const btn = $("mineBtn");
+  btn.disabled = state.mining || state.saving || full;
+  btn.classList.toggle("busy", state.mining);
+  $("mineLabel").textContent =
+    state.saving ? "Syncing…" : full ? "Batch full" : state.mining ? "Mining…" : "Mine Block";
+
+  $("retryBtn").classList.toggle("hidden", !(full && !state.saving && !state.retryPending));
+  renderChain();
+}
+
+function hashNode(hash) {
+  const span = el("span", "hash");
+  const zeros = hash.match(/^0*/)[0].length;
+  span.append(el("span", "z", hash.slice(0, zeros)), document.createTextNode(hash.slice(zeros)));
+  span.title = hash;
+  return span;
+}
+
+function renderChain() {
+  const box = $("chain");
+  box.replaceChildren();
+  if (!state.recent.length) {
+    box.append(el("div", "empty", "No blocks yet this session."));
+    return;
+  }
+  for (const b of state.recent) {
+    const card = el("div", "block");
+    const head = el("div", "block-head");
+    const left = el("span");
+    left.append(el("b", null, `#${b.index}`), document.createTextNode(`  nonce ${b.nonce.toLocaleString()} · ${b.ms.toFixed(1)} ms`));
+    head.append(left, el("span", "tag " + (b.saved ? "saved" : "unsaved"), b.saved ? "saved" : "unsaved"));
+
+    const h = el("div", "hash-line");
+    h.append(el("span", "k", "hash"), hashNode(b.hash));
+    const p = el("div", "hash-line");
+    const prev = el("span", "hash", b.prevHash);
+    prev.title = b.prevHash;
+    p.append(el("span", "k", "prev"), prev);
+
+    card.append(head, h, p);
+    box.append(card);
+  }
+}
+
+function renderBoard(snap) {
+  const box = $("board");
+  box.replaceChildren();
+  if (snap.empty) {
+    box.append(el("div", "empty", "No miners yet — save the first batch!"));
+    return;
+  }
+  let rank = 0;
+  snap.forEach((doc) => {
+    rank++;
+    const d = doc.data();
+    const me = state.user && doc.id === state.user.uid;
+    const row = el("div", "lb-row" + (me ? " me" : ""));
+    row.append(
+      el("span", "lb-rank", rank),
+      el("span", "lb-name", (d.displayName || "Miner") + (me ? " (you)" : "")),
+      el("span", "lb-coins", (d.coins || 0).toLocaleString())
+    );
+    box.append(row);
+  });
+}
+
+function dbErrorMessage(err) {
+  switch (err && err.code) {
+    case "permission-denied":
+      return "Firestore refused the request — publish the rules from firestore.rules (test mode may have expired).";
+    case "unavailable":
+      return "Can't reach Firestore — check your connection.";
+    case "failed-precondition":
+      return "Firestore isn't set up for this project yet (create the database in the console).";
+    default:
+      return (err && err.message) || "Unknown error.";
+  }
+}
+
+/* =====================================================================
+   7. AUTH (Google / Gmail sign-in)
+   ===================================================================== */
+function showAuthError(err) {
+  if (!err) return;
+  const msg = {
+    "auth/unauthorized-domain":
+      `This domain (${location.hostname || "file://"}) isn't authorized. Add it under Firebase Console → Authentication → Settings → Authorized domains, or serve the page from localhost.`,
+    "auth/operation-not-allowed":
+      "Google sign-in isn't enabled. Turn it on under Authentication → Sign-in method.",
+    "auth/network-request-failed": "Network error — check your connection and try again."
+  }[err.code];
+  $("loginError").textContent = msg || err.message;
+}
+
+async function onLoginClick() {
+  $("loginError").textContent = "";
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  try {
+    await auth.signInWithPopup(provider);
+  } catch (err) {
+    if (err.code === "auth/popup-blocked" || err.code === "auth/operation-not-supported-in-this-environment") {
+      return auth.signInWithRedirect(provider);
+    }
+    if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
+      showAuthError(err);
+    }
+  }
+}
+
+function resetSession() {
+  state.session++;
+  clearTimeout(state.retryTimer);
+  state.retryPending = false;
+  state.localBatch = [];
+  state.recent = [];
+  state.tip = { index: 0, hash: GENESIS_HASH };
+  state.sessionBlocks = 0;
+  state.mining = false;
+  state.saving = false;
+  state.cloud = { coins: 0, batches: 0, lastBatchAtMs: 0, loaded: false };
+  $("mineMeta").textContent = "Click to search for a valid nonce.";
+  setStatus("", "");
+}
+
+function handleAuth(user) {
+  if (unsubUser) { unsubUser(); unsubUser = null; }
+  if (unsubBoard) { unsubBoard(); unsubBoard = null; }
+
+  if (!user) {
+    state.user = null;
+    resetSession();
+    $("dashboard").classList.add("hidden");
+    $("userChip").classList.add("hidden");
+    $("loginView").classList.remove("hidden");
+    return;
+  }
+
+  if (!state.user || state.user.uid !== user.uid) resetSession();
+  state.user = user;
+
+  $("loginView").classList.add("hidden");
+  $("dashboard").classList.remove("hidden");
+  $("userChip").classList.remove("hidden");
+  $("userName").textContent = user.displayName || user.email || "Miner";
+  const photo = $("userPhoto");
+  if (user.photoURL) { photo.src = user.photoURL; photo.classList.remove("hidden"); }
+  else photo.classList.add("hidden");
+
+  const session = state.session;
+
+  // Live total for this user
+  unsubUser = db.collection("users").doc(user.uid).onSnapshot(
+    (snap) => {
+      if (session !== state.session) return;
+      const d = snap.exists ? snap.data({ serverTimestamps: "estimate" }) : {};
+      state.cloud = {
+        coins: d.coins || 0,
+        batches: d.batches || 0,
+        lastBatchAtMs: d.lastBatchAt ? d.lastBatchAt.toMillis() : 0,
+        loaded: true
+      };
+      render();
+    },
+    (err) => setStatus(dbErrorMessage(err), "err")
+  );
+
+  // Live top-10 scoreboard
+  unsubBoard = db.collection("users").orderBy("coins", "desc").limit(10).onSnapshot(
+    renderBoard,
+    (err) => { $("board").replaceChildren(el("div", "empty", dbErrorMessage(err))); }
+  );
+
+  render();
+}
+
+/* =====================================================================
+   8. BOOT
+   ===================================================================== */
+$("batchOf").textContent = ` / ${BATCH_SIZE}`;
+$("mineTarget").replaceChildren(
+  document.createTextNode(`Difficulty ${DIFFICULTY} · target: SHA-256 hash starting with `),
+  el("code", null, "0".repeat(DIFFICULTY))
+);
+$("mineBtn").addEventListener("click", onMineClick);
+$("retryBtn").addEventListener("click", () => saveBatch());
+$("loginBtn").addEventListener("click", onLoginClick);
+$("signOutBtn").addEventListener("click", () => {
+  const n = state.localBatch.length;
+  if (n && !confirm(`You have ${n} unsaved block${n === 1 ? "" : "s"} in this tab. They will be lost. Sign out anyway?`)) return;
+  auth.signOut();
+});
+window.addEventListener("beforeunload", (e) => {
+  if (state.localBatch.length) { e.preventDefault(); e.returnValue = ""; }
+});
+
+const configured = !Object.values(firebaseConfig).some((v) => String(v).startsWith("YOUR_"));
+
+if (typeof firebase === "undefined") {
+  $("loginBtn").disabled = true;
+  $("loginError").textContent = "Couldn't load the Firebase SDK — check your internet connection.";
+} else if (!configured) {
+  $("configBanner").classList.remove("hidden");
+  $("loginBtn").disabled = true;
+} else {
+  firebase.initializeApp(firebaseConfig);
+  auth = firebase.auth();
+  db = firebase.firestore();
+  auth.getRedirectResult().catch(showAuthError);
+  auth.onAuthStateChanged(handleAuth);
+}
+</script>
+</body>
+</html>
