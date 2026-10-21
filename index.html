@@ -265,7 +265,7 @@ const firebaseConfig = {
 /* =====================================================================
    2. GAME SETTINGS
    ===================================================================== */
-const DIFFICULTY = 1;          // number of leading "0" hex characters a hash needs
+const DIFFICULTY = 4;          // number of leading "0" hex characters a hash needs (4 ≈ 65,536 hashes per block on average)
 const BATCH_SIZE = 50;         // blocks cached locally before one cloud write
 const COINS_PER_BATCH = 50;    // coins credited per batch
 const COOLDOWN_MS = 10000;     // minimum gap between batch writes — keep in sync with firestore.rules
@@ -326,7 +326,9 @@ async function mineBlock(uid, session) {
     if (nonce % 5000 === 0) {
       // Let the page repaint on higher difficulties, and honour Stop mid-search
       if (!state.running || session !== state.session) return null;
-      $("mineMeta").textContent = `Searching… nonce ${nonce.toLocaleString()}`;
+      const rate = Math.round(nonce / ((performance.now() - t0) / 1000));
+      $("mineMeta").textContent =
+        `Mining block #${index}… nonce ${nonce.toLocaleString()} · ${rate.toLocaleString()} hashes/s`;
       await sleep(0);
     }
   }
@@ -343,6 +345,7 @@ async function mineBlock(uid, session) {
    5. MINING + BATCHED CLOUD SAVE
    ===================================================================== */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const fmtTime = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(1)} ms`);
 
 function onToggleClick() {
   if (!state.user) return;
@@ -387,7 +390,7 @@ async function runMiner() {
       state.sessionBlocks++;
       $("mineMeta").textContent =
         `Block #${block.index} solved · nonce ${block.nonce.toLocaleString()} · ` +
-        `${block.attempts.toLocaleString()} hash${block.attempts === 1 ? "" : "es"} · ${block.ms.toFixed(1)} ms`;
+        `${block.attempts.toLocaleString()} hash${block.attempts === 1 ? "" : "es"} · ${fmtTime(block.ms)}`;
       render();
 
       const rest = BLOCK_INTERVAL_MS - (performance.now() - started);
@@ -533,7 +536,7 @@ function renderChain() {
     const card = el("div", "block");
     const head = el("div", "block-head");
     const left = el("span");
-    left.append(el("b", null, `#${b.index}`), document.createTextNode(`  nonce ${b.nonce.toLocaleString()} · ${b.ms.toFixed(1)} ms`));
+    left.append(el("b", null, `#${b.index}`), document.createTextNode(`  nonce ${b.nonce.toLocaleString()} · ${fmtTime(b.ms)}`));
     head.append(left, el("span", "tag " + (b.saved ? "saved" : "unsaved"), b.saved ? "saved" : "unsaved"));
 
     const h = el("div", "hash-line");
