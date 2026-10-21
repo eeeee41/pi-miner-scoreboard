@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Pi Miner — security rules (shared blockchain + wallets + Pi coin exchange)
+// Pi Miner — security rules (shared blockchain, wallets, exchange, companies)
 // Paste into Firebase Console → Firestore Database → Rules → Publish.
 //
 // The game runs on the free Spark plan with no server code, so these rules
@@ -40,32 +40,58 @@ service cloud.firestore {
 
       allow delete: if false;
 
-      // Activity feed: only the owner reads it. Trade entries must match a real trade.
+      // Activity feed: only the owner reads it. Entries other players write must match something real.
       match /history/{entry} {
         allow read: if signedIn() && request.auth.uid == uid;
         allow create: if signedIn() && (
-          // A block this player mined (must exist on the chain, mined by them, same reward)
-          (request.auth.uid == uid
-            && request.resource.data.keys().hasOnly(['kind', 'height', 'reward', 'trades', 'at'])
-            && request.resource.data.kind == 'block'
-            && entry == 'block-' + string(request.resource.data.height)
-            && request.resource.data.at == request.time
-            && minedBy(request.resource.data.height, uid, request.resource.data.reward))
-          ||
-          (request.auth.uid == uid && entry == 'starting-cash'
-            && request.resource.data.kind == 'grant'
-            && request.resource.data.amount == 1000000)
-          ||
-          (request.resource.data.keys().hasOnly(['kind', 'side', 'price', 'qty', 'with', 'at'])
-            && request.resource.data.kind == 'trade'
-            && request.resource.data.side in ['buy', 'sell']
-            && request.resource.data.price is int
-            && request.resource.data.qty is int
-            && request.resource.data.at == request.time
-            && existsAfter(/databases/$(database)/documents/market/PI/trades/$(entry)))
+          (request.auth.uid == uid && ownEntry(entry, uid))
+          || tradeEntry(entry)
+          || dividendEntry()
+          || expiryEntry(uid)
         );
         allow update, delete: if false;
       }
+    }
+
+    // History entries
+    function ownEntry(entry, uid) {
+      let d = request.resource.data;
+      return (d.kind == 'block'
+          && d.keys().hasOnly(['kind', 'height', 'reward', 'trades', 'at'])
+          && entry == 'block-' + string(d.height)
+          && d.at == request.time
+          && minedBy(d.height, uid, d.reward))
+        || (entry == 'starting-cash' && d.kind == 'grant' && d.amount == 1000000)
+        || (d.kind in ['founded', 'offering', 'deposit']
+          && d.keys().hasOnly(['kind', 'asset', 'amount', 'qty', 'price', 'at'])
+          && d.at == request.time);
+    }
+    function tradeEntry(entry) {
+      let d = request.resource.data;
+      return d.kind == 'trade'
+        && d.keys().hasOnly(['kind', 'asset', 'side', 'price', 'qty', 'with', 'at'])
+        && d.side in ['buy', 'sell']
+        && d.price is int && d.qty is int
+        && d.at == request.time
+        && existsAfter(/databases/$(database)/documents/market/$(d.get('asset', 'PI'))/trades/$(entry));
+    }
+    function dividendEntry() {
+      let d = request.resource.data;
+      return d.kind == 'dividend'
+        && d.keys().hasOnly(['kind', 'asset', 'amount', 'hours', 'at'])
+        && d.amount is int && d.amount > 0
+        && d.at == request.time;
+    }
+    function expiryEntry(uid) {
+      let d = request.resource.data;
+      return d.kind in ['bought', 'returned']
+        && d.keys().hasOnly(['kind', 'asset', 'order', 'qty', 'price', 'at'])
+        && d.at == request.time
+        && expiredOrder(d.asset, d.order, uid, d.kind);
+    }
+    function expiredOrder(asset, order, uid, kind) {
+      let o = getAfter(/databases/$(database)/documents/market/$(asset)/sells/$(order)).data;
+      return o.uid == uid && o.status == kind;
     }
 
     // The owner trading, cancelling or collecting a block reward: balances stay whole and never go negative
@@ -127,6 +153,21 @@ service cloud.firestore {
         && !('p' in request.resource.data);
     }
 
+    // 10-day rule: anyone may settle a sell order that has been open for 10 days.
+    // The market buys it at no more than 80% of its price, or hands it back if it can't be priced.
+    function expireOrder() {
+      let o = request.resource.data;
+      let was = resource.data;
+      return ('p' in was) && was.side == 'sell'
+        && request.time > was.createdAt + duration.value(240, 'h')
+        && !('p' in o)
+        && ((o.status == 'bought'
+              && changed().hasOnly(['status', 'p', 'remaining', 'filled', 'buyoutPrice'])
+              && o.remaining == 0 && o.filled == was.filled + was.remaining
+              && o.buyoutPrice is int && o.buyoutPrice >= 0 && o.buyoutPrice <= was.price * 0.8)
+            || (o.status == 'returned' && changed().hasOnly(['status', 'p'])));
+    }
+
     match /market/{asset}/buys/{id} {
       allow read: if signedIn();
       allow create: if signedIn() && newOrder('buy');
@@ -137,7 +178,7 @@ service cloud.firestore {
     match /market/{asset}/sells/{id} {
       allow read: if signedIn();
       allow create: if signedIn() && newOrder('sell');
-      allow update: if signedIn() && (fillOrder() || cancelOrder());
+      allow update: if signedIn() && (fillOrder() || cancelOrder() || expireOrder());
       allow delete: if false;
     }
 
@@ -158,6 +199,104 @@ service cloud.firestore {
         && resource.data.block == null
         && request.resource.data.block is int && request.resource.data.block > 0;
       allow delete: if false;
+    }
+
+    // ---------------- Companies ----------------
+    match /companies/{ticker} {
+      allow read: if signedIn();
+      allow create: if signedIn() && newCompany(ticker);
+      allow update: if signedIn()
+        && (companySettings() || buyOffering() || addToTreasury() || payout() || takeControl(ticker) || newLastPrice());
+      allow delete: if false;
+
+      // Shareholdings. Owners may change their own; anyone else may only add (paying for a trade).
+      match /holders/{holder} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.keys().hasOnly(['uid', 'name', 'shares'])
+          && request.resource.data.uid == holder
+          && validName(request.resource.data.name)
+          && isCount(request.resource.data.shares);
+        allow update: if signedIn()
+          && changed().hasOnly(['uid', 'name', 'shares'])
+          && request.resource.data.uid == holder
+          && isCount(request.resource.data.shares)
+          && (request.auth.uid == holder || request.resource.data.shares >= resource.data.shares);
+        allow delete: if false;
+      }
+    }
+
+    // Founding: $1,000 fee is taken from the wallet; the founder holds all 1,000,000 shares
+    function newCompany(ticker) {
+      let c = request.resource.data;
+      return c.keys().hasOnly(['ticker', 'name', 'industry', 'founder', 'founderName', 'controller', 'controllerName',
+                               'shares', 'treasury', 'dividendPerHour', 'offerPrice', 'offerLeft', 'lastPayoutAt', 'createdAt'])
+        && c.ticker == ticker && ticker.matches('^[A-Z]{3,4}$') && ticker != 'PI'
+        && c.name is string && c.name.size() >= 2 && c.name.size() <= 40
+        && c.industry is string && c.industry.size() <= 40
+        && c.founder == request.auth.uid && c.controller == request.auth.uid
+        && validName(c.founderName) && validName(c.controllerName)
+        && c.shares == 1000000 && isCount(c.treasury)
+        && c.dividendPerHour == 0 && c.offerPrice == 0 && c.offerLeft == 0
+        && c.lastPayoutAt is int
+        && c.lastPayoutAt <= request.time.toMillis() && c.lastPayoutAt > request.time.toMillis() - 7200000
+        && c.createdAt == request.time
+        && getAfter(/databases/$(database)/documents/companies/$(ticker)/holders/$(request.auth.uid)).data.shares == 1000000;
+    }
+
+    // Only the controller sets the dividend and opens share offerings
+    function companySettings() {
+      let c = request.resource.data;
+      return resource.data.controller == request.auth.uid
+        && changed().hasOnly(['dividendPerHour', 'offerPrice', 'offerLeft'])
+        && isCount(c.dividendPerHour) && isCount(c.offerPrice)
+        && isCount(c.offerLeft) && c.offerLeft <= 10000000;
+    }
+
+    // Buying new shares from the company: the price goes into the treasury
+    function buyOffering() {
+      let c = request.resource.data;
+      let was = resource.data;
+      return changed().hasOnly(['shares', 'offerLeft', 'treasury'])
+        && was.offerPrice > 0
+        && c.shares > was.shares
+        && c.offerLeft == was.offerLeft - (c.shares - was.shares) && c.offerLeft >= 0
+        && c.treasury == was.treasury + (c.shares - was.shares) * was.offerPrice;
+    }
+
+    // Anyone may add Cash to a treasury
+    function addToTreasury() {
+      return changed().hasOnly(['treasury'])
+        && request.resource.data.treasury is int
+        && request.resource.data.treasury > resource.data.treasury;
+    }
+
+    // Hourly dividends: the clock moves forward in whole hours and the treasury pays at most
+    // the dividend for those hours. Money never leaves the treasury any other way.
+    function payout() {
+      let c = request.resource.data;
+      let was = resource.data;
+      return changed().hasOnly(['treasury', 'lastPayoutAt'])
+        && c.lastPayoutAt is int && c.lastPayoutAt > was.lastPayoutAt
+        && (c.lastPayoutAt - was.lastPayoutAt) % 3600000 == 0
+        && c.lastPayoutAt <= request.time.toMillis()
+        && isCount(c.treasury) && c.treasury <= was.treasury
+        && was.treasury - c.treasury <= was.dividendPerHour * ((c.lastPayoutAt - was.lastPayoutAt) / 3600000);
+    }
+
+    // Control passes to whoever now holds more shares than the controller
+    function takeControl(ticker) {
+      let c = request.resource.data;
+      return changed().hasOnly(['controller', 'controllerName'])
+        && c.controller != 'market' && validName(c.controllerName)
+        && get(/databases/$(database)/documents/companies/$(ticker)/holders/$(c.controller)).data.shares
+           > get(/databases/$(database)/documents/companies/$(ticker)/holders/$(resource.data.controller)).data.shares;
+    }
+
+    // The last trade price shown on the Stocks tab
+    function newLastPrice() {
+      return changed().hasOnly(['lastPrice'])
+        && request.resource.data.lastPrice is int && request.resource.data.lastPrice > 0;
     }
 
     // ---------------- Blockchain ----------------

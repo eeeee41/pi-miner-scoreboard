@@ -68,7 +68,9 @@ const state = {
   tipLoaded: false,
   blocks: [],             // latest blocks, newest first
   checked: new Map(),     // block hash -> true (valid) / false (doesn't add up)
-  pending: 0,             // trades waiting for a block
+  pending: 0,             // trades waiting for a block, all markets
+  pendingBy: new Map(),   // market -> waiting trades
+  tickers: [],            // company tickers (each has its own market)
   wallet: { coins: 0, blocksMined: 0, loaded: false },
   progress: 0             // hashes tried on the current block ÷ average needed
 };
@@ -335,21 +337,26 @@ async function mineSingle(job, session) {
 }
 
 /* ---------- 5. Mining loop + saving blocks ---------- */
-const tradesCol = () => db.collection("market").doc("PI").collection("trades");
-const tradeLine = (t) => `${t.id}|${t.buyer}|${t.seller}|${t.qty}|${t.price}`;
+const tradesCol = (asset = "PI") => db.collection("market").doc(asset).collection("trades");
+// One line per trade in the block's trade fingerprint (txRoot). Trades from every market go in.
+const tradeLine = (t) => `${t.asset}|${t.id}|${t.buyer}|${t.seller}|${t.qty}|${t.price}`;
+const marketsList = () => ["PI", ...state.tickers];
 
 // Take the tip and the waiting trades, and build the header to search on.
 async function prepareJob() {
   const tip = state.tip;
-  const snap = await tradesCol().where("block", "==", null).limit(MAX_BLOCK_TRADES).get();
-  const trades = snap.docs
-    .map((d) => ({ id: d.id, ...d.data({ serverTimestamps: "estimate" }) }))
-    .sort((a, b) => tsMs(a.at) - tsMs(b.at) || (a.id < b.id ? -1 : 1));
+  let trades = [];
+  for (const asset of marketsList()) {
+    if (trades.length >= MAX_BLOCK_TRADES) break;
+    const snap = await tradesCol(asset).where("block", "==", null).limit(MAX_BLOCK_TRADES - trades.length).get();
+    trades.push(...snap.docs.map((d) => ({ ...d.data({ serverTimestamps: "estimate" }), id: d.id, asset })));
+  }
+  trades = trades.sort((a, b) => tsMs(a.at) - tsMs(b.at) || (a.id < b.id ? -1 : 1)).slice(0, MAX_BLOCK_TRADES);
   const height = tip.height + 1;
   const b = {
     height, prevHash: tip.hash, prevTimestamp: tip.timestamp || 0, timestamp: Date.now(),
     miner: state.user.uid, reward: rewardAt(height), work: clampWork(tip.nextWork || START_WORK),
-    txIds: trades.map((t) => t.id), txRoot: await sha256Hex(trades.map(tradeLine).join("\n"))
+    txIds: trades.map((t) => `${t.asset}/${t.id}`), txRoot: await sha256Hex(trades.map(tradeLine).join("\n"))
   };
   return { ...b, prefix: blockHeader(b), target: targetFor(b.work) };
 }
@@ -383,7 +390,10 @@ async function submitBlock(b) {
       txRoot: b.txRoot, txIds: b.txIds, at: now
     });
     tx.set(metaRef, { ...tip, at: now });
-    for (const id of b.txIds) tx.update(tradesCol().doc(id), { block: b.height });
+    for (const key of b.txIds) {
+      const [asset, id] = key.split("/");
+      tx.update(tradesCol(asset).doc(id), { block: b.height });
+    }
     tx.update(userRef, { coins: (me.coins || 0) + b.reward, blocksMined: (me.blocksMined || 0) + 1 });
     tx.set(userRef.collection("history").doc(`block-${b.height}`), {
       kind: "block", height: b.height, reward: b.reward, trades: b.txIds.length, at: now
@@ -638,6 +648,7 @@ function resetSession() {
   unsubs = [];
   Object.assign(state, {
     running: false, loopActive: false, mining: false, submitting: false, progress: 0,
+    pending: 0, pendingBy: new Map(), tickers: [],
     wallet: { coins: 0, blocksMined: 0, loaded: false }
   });
   $("mineMeta").textContent = "Press Start to mine. You'll race everyone else for each block.";
@@ -648,6 +659,7 @@ function handleAuth(user) {
   if (!user) {
     state.user = null;
     Economy.signOut();
+    Companies.signOut();
     resetSession();
     $("dashboard").classList.add("hidden");
     $("userChip").classList.add("hidden");
@@ -666,6 +678,7 @@ function handleAuth(user) {
   else photo.classList.add("hidden");
 
   Economy.signIn(user);                        // wallet, starting Cash, exchange
+  Companies.signIn(user);                      // companies, shares, dividends
   const session = state.session;
   const live = (fn) => (...args) => { if (session === state.session) fn(...args); };
   const fail = (what) => live((err) => setStatus(`${what}: ${dbErrorMessage(err)}`, "err"));
@@ -691,10 +704,23 @@ function handleAuth(user) {
     verifyBlocks();
   }), fail("Blocks")));
 
-  unsubs.push(tradesCol().where("block", "==", null).limit(MAX_BLOCK_TRADES).onSnapshot(live((snap) => {
-    state.pending = snap.size;
-    render();
-  }), fail("Pending trades")));
+  // Waiting trades, per market (Pi coin + every company)
+  const pendingSubs = new Map();
+  const watchPending = (asset) => {
+    if (pendingSubs.has(asset)) return;
+    const u = tradesCol(asset).where("block", "==", null).limit(MAX_BLOCK_TRADES).onSnapshot(live((snap) => {
+      state.pendingBy.set(asset, snap.size);
+      state.pending = [...state.pendingBy.values()].reduce((a, n) => a + n, 0);
+      render();
+    }), fail("Pending trades"));
+    pendingSubs.set(asset, u);
+    unsubs.push(u);
+  };
+  watchPending("PI");
+  unsubs.push(db.collection("companies").orderBy("createdAt", "asc").limit(100).onSnapshot(live((snap) => {
+    state.tickers = snap.docs.map((d) => d.id);
+    state.tickers.forEach(watchPending);
+  }), fail("Companies")));
 
   unsubs.push(db.collection("users").orderBy("coins", "desc").limit(10).onSnapshot(live(renderBoard),
     live((err) => $("board").replaceChildren(el("div", "empty", dbErrorMessage(err))))));
@@ -717,6 +743,7 @@ if (typeof firebase === "undefined") {
   auth = firebase.auth();
   db = firebase.firestore();
   Economy.init(firebase, db);
+  Companies.init(firebase, db);
   auth.getRedirectResult().catch(showAuthError);
   auth.onAuthStateChanged(handleAuth);
 }

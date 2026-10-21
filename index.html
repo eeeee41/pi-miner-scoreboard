@@ -229,7 +229,39 @@
   .trade-row span:not(:first-child) { text-align: right; }
   .trade-row .t { color: var(--muted); }
 
+  /* ---------- Stocks ---------- */
+  .stocks-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); margin-top: 0; }
+  .market-pick { margin: 0 0 12px; max-width: 280px; }
+  .co-row {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; text-align: left;
+    background: transparent; color: var(--text); padding: 10px 10px; border-radius: 8px; border: 1px solid transparent;
+  }
+  .co-row + .co-row { margin-top: 4px; }
+  .co-row:hover { background: var(--panel-2); }
+  .co-row.on { background: var(--panel-2); border-color: var(--border); }
+  .co-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .co-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .co-sub { font-size: 12px; color: var(--muted); }
+  .co-price { font-variant-numeric: tabular-nums; font-weight: 650; font-size: 14px; white-space: nowrap; }
+  .ticker { font-family: var(--mono); color: var(--gold); letter-spacing: 0.5px; }
+  .co-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .co-title { font-size: 20px; color: var(--text); margin: 0; }
+  .chip { font-size: 12px; padding: 2px 10px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
+  .co-ctl { color: var(--muted); font-size: 13px; margin: 6px 0 14px; }
+  .kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .kpi { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .kpi .k { font-size: 12px; color: var(--muted); }
+  .kpi b { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .kpi .ks { font-size: 12px; color: var(--muted); }
+  .co-note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+  .co-sec { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 14px; }
+  .co-sec h3 { font-size: 14px; margin: 0; color: var(--text); }
+  .co-sec.ctl h3 { color: var(--gold); }
+  .co-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0 12px; align-items: end; }
+  .co-form > .btn-ghost { margin-top: 14px; padding: 11px 14px; }
+
   @media (max-width: 760px) {
+    .stocks-grid, .kpis { grid-template-columns: 1fr; }
     header { padding: 12px 16px; }
     .brand span { display: none; }
     main { padding: 20px 16px 48px; }
@@ -279,6 +311,7 @@
       <button class="tab active" role="tab" id="tabBtn-mine" data-tab="mine" aria-selected="true">Mine</button>
       <button class="tab" role="tab" id="tabBtn-wallet" data-tab="wallet" aria-selected="false">Wallet</button>
       <button class="tab" role="tab" id="tabBtn-exchange" data-tab="exchange" aria-selected="false">Exchange</button>
+      <button class="tab" role="tab" id="tabBtn-stocks" data-tab="stocks" aria-selected="false">Stocks</button>
     </nav>
 
     <div id="tab-mine" role="tabpanel">
@@ -348,7 +381,8 @@
     <div id="tab-exchange" role="tabpanel" class="hidden">
       <div class="card ex-head">
         <div>
-          <div class="stat-label">PI / Cash · last trade</div>
+          <label class="field market-pick" for="xMarket"><span>Market</span><select id="xMarket"><option value="PI">Pi coin (PI)</option></select></label>
+          <div class="stat-label" id="xPair">PI / Cash · last trade</div>
           <div class="stat-value gold" id="xLast">—</div>
           <div class="stat-sub" id="xChange"></div>
         </div>
@@ -373,10 +407,10 @@
               <option value="market">Market: trade now at the best price</option>
             </select>
           </label>
-          <label class="field" for="xQty"><span>Amount (Pi)</span>
+          <label class="field" for="xQty"><span id="xQtyLabel">Amount (Pi)</span>
             <input id="xQty" type="number" min="1" step="1" inputmode="numeric" value="10" />
           </label>
-          <label class="field" id="xPriceField" for="xPrice"><span>Price per Pi ($)</span>
+          <label class="field" id="xPriceField" for="xPrice"><span id="xPriceLabel">Price per Pi ($)</span>
             <input id="xPrice" type="number" min="0.01" step="0.01" inputmode="decimal" value="1.00" />
           </label>
           <div class="ex-summary">
@@ -388,7 +422,7 @@
         </div>
         <div class="card">
           <h2>Order book</h2>
-          <div class="book-head"><span>Price</span><span>Pi</span><span>Total</span></div>
+          <div class="book-head"><span>Price</span><span id="xBookHead">Pi</span><span>Total</span></div>
           <div id="xAsks"></div>
           <div class="spread" id="xSpread">—</div>
           <div id="xBids"></div>
@@ -398,12 +432,42 @@
       <div class="lower">
         <div class="card">
           <h2>Your open orders</h2>
+          <p class="co-note">Sell orders still open after 10 days are bought by the market at 80% of the lower of your price and the recent average trade price.</p>
           <div id="xMine"><div class="empty">Loading…</div></div>
         </div>
         <div class="card">
           <h2>Recent trades</h2>
           <div id="xTrades"><div class="empty">Loading…</div></div>
         </div>
+      </div>
+    </div>
+
+    <!-- ===== Stocks ===== -->
+    <div id="tab-stocks" role="tabpanel" class="hidden">
+      <div class="ex-grid stocks-grid">
+        <div class="card">
+          <h2>Companies</h2>
+          <div id="sList"><div class="empty">Loading…</div></div>
+          <div class="co-sec">
+            <h3>Found a company</h3>
+            <p class="co-note">Costs a $1,000 fee plus whatever you invest into its treasury. You get all 1,000,000 shares and control it.</p>
+            <div class="co-form">
+              <label class="field" for="sTicker"><span>Ticker (3–4 letters)</span><input id="sTicker" maxlength="4" autocomplete="off" placeholder="ACME" /></label>
+              <label class="field" for="sCoName"><span>Name</span><input id="sCoName" maxlength="40" autocomplete="off" placeholder="Acme Motors" /></label>
+            </div>
+            <div class="co-form">
+              <label class="field" for="sIndustry"><span>Industry</span><select id="sIndustry"></select></label>
+              <label class="field" for="sInvest"><span>Starting investment ($)</span><input id="sInvest" type="number" min="0" step="0.01" value="1000.00" /></label>
+            </div>
+            <button class="btn-primary buy" id="sFoundBtn">Found company</button>
+            <div class="status" id="sFoundMsg"></div>
+          </div>
+        </div>
+        <div class="card" id="sDetail"><h2>Company</h2><div class="empty">Loading…</div></div>
+      </div>
+      <div class="card" style="margin-top: 16px">
+        <h2>Your shares</h2>
+        <div id="sPortfolio"><div class="empty">Loading…</div></div>
       </div>
     </div>
   </section>
@@ -415,6 +479,8 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <!-- Phase 1: wallets and the Pi coin exchange -->
 <script src="economy.js"></script>
+<!-- Phase 2: companies, shares and dividends -->
+<script src="companies.js"></script>
 
 <!-- Mining on the shared Pi blockchain + sign-in (loads last) -->
 <script src="miner.js"></script>
