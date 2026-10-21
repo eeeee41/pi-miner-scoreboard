@@ -18,7 +18,7 @@ service cloud.firestore {
     function isCount(n) { return n is int && n >= 0; }
     function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
 
-    /* ---------------- Wallets ---------------- */
+    // ---------------- Wallets ----------------
     match /users/{uid} {
       allow read: if signedIn();
 
@@ -91,7 +91,7 @@ service cloud.firestore {
         && request.resource.data.get('coins', 0) >= resource.data.get('coins', 0);
     }
 
-    /* ---------------- Exchange ---------------- */
+    // ---------------- Exchange ----------------
     function newOrder(side) {
       let o = request.resource.data;
       return o.keys().hasOnly(['uid', 'name', 'side', 'price', 'p', 'qty', 'remaining', 'filled', 'status', 'createdAt'])
@@ -160,7 +160,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    /* ---------------- Blockchain ---------------- */
+    // ---------------- Blockchain ----------------
     function blockAfter(h) {
       return getAfter(/databases/$(database)/documents/chain/$(string(h))).data;
     }
