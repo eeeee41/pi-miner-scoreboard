@@ -768,7 +768,7 @@ const Factory = (() => {
   function renderSummary() {
     const box = g("fSummary");
     const c = company();
-    if (!c) { box.replaceChildren(mk("div", "empty", "You don't run a company yet. Found one on the Stocks tab (or buy enough shares to take control of one), then come back to build its factory. Factories are private: only whoever runs a company can see inside it.")); return; }
+    if (!c) { box.replaceChildren(mk("div", "empty", "You don't run a company yet. Found one on the Stocks tab (or have a controller hand one over to you), then come back to build its factory. Factories are private: only whoever runs a company can see inside it.")); return; }
     const { f, income } = projected();
     const kpis = mk("div", "kpis four");
     const k = (label, value, sub) => { const d = mk("div", "kpi"); d.append(mk("span", "k", label), mk("b", null, value)); if (sub) d.append(mk("span", "ks", sub)); return d; };

@@ -9,8 +9,8 @@
 
    • Founding costs a $1,000 fee plus any starting investment, which goes
      into the treasury. The founder gets 1,000,000 shares.
-   • The biggest shareholder controls the company. Control moves as soon
-     as someone holds more shares than the current controller.
+   • Control doesn't follow share count: the founder runs the company until
+     they hand control to another shareholder themselves (Stocks tab).
    • The controller sets a total dividend per hour, paid from the treasury
      to every shareholder by share count, and can offer new shares for
      sale; that money goes into the treasury. Money only leaves the
@@ -116,19 +116,16 @@ const Companies = (() => {
     await companyRef(ticker).update({ dividendPerHour, offerPrice, offerLeft, industry, tradingClosed });
   }
 
-  // Hand control to the biggest shareholder if they now hold more than the controller.
-  async function checkControl(c) {
-    const top = await holdersCol(c.ticker).orderBy("shares", "desc").limit(13).get();   // room past the market and all ten bots
-    // The market (10-day buyouts) and the investor bots never take control
-    const best = top.docs.map((d) => d.data()).find((h) => h.uid !== "market" && !String(h.uid).startsWith("bot-"));
-    if (!best || best.uid === c.controller) return;
+  // The controller hands the company to another shareholder (a player, not the market or a bot)
+  async function handOver(ticker, uid) {
+    const me = user.uid;
     await db.runTransaction(async (tx) => {
-      const cur = (await tx.get(companyRef(c.ticker))).data();
-      const held = await tx.get(holderRef(c.ticker, cur.controller));
-      const challenger = await tx.get(holderRef(c.ticker, best.uid));
-      if (cur.controller === best.uid) return;
-      if (challenger.data().shares > ((held.exists && held.data().shares) || 0))
-        tx.update(companyRef(c.ticker), { controller: best.uid, controllerName: best.name });
+      const c = (await tx.get(companyRef(ticker))).data();
+      const h = await tx.get(holderRef(ticker, uid));
+      if (!c || c.controller !== me) throw new Error(`Only whoever runs ${ticker} can hand it over.`);
+      if (uid === "market" || String(uid).startsWith("bot-")) throw new Error("Control can only go to a player.");
+      if (!h.exists || !(h.data().shares > 0)) throw new Error("Control can only go to someone who owns shares.");
+      tx.update(companyRef(ticker), { controller: uid, controllerName: h.data().name });
     });
   }
 
@@ -166,7 +163,6 @@ const Companies = (() => {
     if (!user) return;
     for (const c of st.companies) {
       if (Date.now() - c.lastPayoutAt >= HOUR) await payDividends(c).catch((e) => console.warn("Dividend payout failed", c.ticker, e));
-      await checkControl(c).catch((e) => console.warn("Control check failed", c.ticker, e));
     }
   }
 
@@ -339,13 +335,39 @@ const Companies = (() => {
       }, "sCtlMsg");
       const cmsg = mk("div", "status"); cmsg.id = "sCtlMsg";
       sec.append(r1, r2, closeL, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes."), save, cmsg);
-      sections.push(sec);
+      // Hand control to another shareholder (two clicks, so it can't happen by accident)
+      const heirs = st.top.filter((h) => h.shares > 0 && h.uid !== c.controller && h.uid !== "market" && !String(h.uid).startsWith("bot-"));
+      const ho = mk("div", "co-sec");
+      ho.append(mk("h3", null, "Hand over control"));
+      if (!heirs.length) ho.append(mk("p", "co-note", "Owning the most shares doesn't make someone the controller: you run this company until you hand it over. Only a player who owns shares can take it."));
+      else {
+        const row = mk("div", "co-form");
+        const l = mk("label", "field"); l.htmlFor = "sHeir";
+        const sel = mk("select"); sel.id = "sHeir";
+        sel.replaceChildren(...heirs.map((h) => { const o = mk("option", null, `${h.name} (${pct(h.shares, c.shares)})`); o.value = h.uid; return o; }));
+        l.append(mk("span", null, "Give control to"), sel);
+        const go = mk("button", "btn-ghost", "Hand over control");
+        const hmsg = mk("div", "status"); hmsg.id = "sHandMsg";
+        let armed = null;
+        sel.addEventListener("change", () => { armed = null; go.textContent = "Hand over control"; });
+        go.addEventListener("click", async () => {
+          const h = heirs.find((x) => x.uid === sel.value);
+          if (!h) return;
+          if (armed !== h.uid) { armed = h.uid; go.textContent = `Click again to give ${c.ticker} to ${h.name}`; hmsg.textContent = `You'd stop running ${c.ticker}: its factory, treasury and settings go to ${h.name}. You keep your shares.`; hmsg.className = "status"; return; }
+          go.disabled = true;
+          try { await handOver(c.ticker, h.uid); hmsg.textContent = `✓ ${h.name} now runs ${c.ticker}.`; hmsg.className = "status ok"; }
+          catch (e) { hmsg.textContent = errText(e); hmsg.className = "status err"; go.disabled = false; }
+        });
+        row.append(l, go);
+        ho.append(mk("p", "co-note", "Owning the most shares doesn't make someone the controller: you run this company until you hand it over."), row, hmsg);
+      }
+      sections.push(sec, ho);
     }
 
     // Shareholders
     const sh = mk("div", "co-sec");
     sh.append(mk("h3", null, "Biggest shareholders"));
-    const list = st.top.filter((h) => h.shares > 0);
+    const list = st.top.filter((h) => h.shares > 0).slice(0, 10);
     if (!list.length) sh.append(mk("div", "empty", "Loading…"));
     list.forEach((h, i) => {
       const row = mk("div", "lb-row" + (user && h.uid === user.uid ? " me" : ""));
@@ -396,11 +418,9 @@ const Companies = (() => {
     st.selected = ticker;
     st.top = [];
     detailUnsubs.forEach((u) => u());
-    detailUnsubs = [holdersCol(ticker).orderBy("shares", "desc").limit(10).onSnapshot((s) => {
+    detailUnsubs = [holdersCol(ticker).orderBy("shares", "desc").limit(30).onSnapshot((s) => {
       st.top = s.docs.map((d) => d.data());
       renderDetail();
-      const c = byTicker(ticker);
-      if (c) checkControl(c).catch(() => {});
     }, (e) => setMsg("sFoundMsg", errText(e), "err"))];
     renderAll();
   }

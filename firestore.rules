@@ -311,13 +311,13 @@ service cloud.firestore {
         && was.treasury - c.treasury <= was.dividendPerHour * ((c.lastPayoutAt - was.lastPayoutAt) / 3600000);
     }
 
-    // Control passes to whoever now holds more shares than the controller
+    // Control doesn't follow share count: only the controller can hand it over, to a player who owns shares
     function takeControl(ticker) {
       let c = request.resource.data;
-      return changed().hasOnly(['controller', 'controllerName'])
+      return resource.data.controller == request.auth.uid
+        && changed().hasOnly(['controller', 'controllerName'])
         && c.controller != 'market' && !c.controller.matches('bot-.*') && validName(c.controllerName)
-        && get(/databases/$(database)/documents/companies/$(ticker)/holders/$(c.controller)).data.shares
-           > get(/databases/$(database)/documents/companies/$(ticker)/holders/$(resource.data.controller)).data.shares;
+        && get(/databases/$(database)/documents/companies/$(ticker)/holders/$(c.controller)).data.shares > 0;
     }
 
     // The controller spends the treasury on the factory (materials, lines) and banks car sales

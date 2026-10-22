@@ -7,21 +7,33 @@
    They use the same order books, trades, wallets and shareholdings as
    players, so players trade with them like anyone else.
 
-   Each run, every bot:
-     1. cancels the orders it left last time (money and shares come back)
-     2. values every company: (treasury + its dividend for `horizon` hours)
-        ÷ shares. A company paying no dividend with an empty treasury is
-        worth next to nothing to a bot.
-     3. buys shares offered below its buy price (from players' sell orders
-        or the company's own share offering), and sells into bids above its
-        sell price
-     4. trades Pi coin around its recent average price
-     5. leaves a few resting buy and sell orders for players to trade with
+   How a bot values a share: by the dividends it expects to be paid while
+   holding it. Each run the bots note every company's treasury, dividend
+   and payout record (public information; they never look inside a
+   factory) in botMemory/{TICKER}, and from that history estimate:
+     • earnings: how fast the treasury grows, plus what it paid out
+     • reliability: how many of its recent payout hours were actually paid
+     • runway: how long the treasury can keep paying today's dividend
+   A company earning more than it pays will probably raise its dividend (an
+   optimistic bot counts on more of that); one paying more than it earns,
+   or skipping payouts, will probably cut it. Bots differ in optimism and
+   in how many hours of dividends they look ahead, so they disagree, and
+   that's why they trade with players and with each other.
 
-   Bots never trade with each other, and never bid more than 25% above
-   what players have recently paid, so they can't invent prices on their own.
-   Bots never hold more than 10% of a company and can never take control
-   of one (the game and the rules skip bots when handing over control).
+   Each run, every bot cancels the orders it left last time, then buys
+   shares (from sell orders or company offerings) priced well under its
+   valuation, sells into bids well over it, trades Pi around its recent
+   price, and leaves a few orders on the books.
+
+   Keeping prices sane: every asset has a reference price, what players
+   have recently paid (trades between two bots don't count) or, if players
+   haven't traded it, the bots' average valuation. Bots only trade with
+   each other within 20% below to 25% above it, never bid more than 25%
+   above it, and never buy and sell the same asset in one run. So trades
+   between bots can't ratchet a price up.
+
+   Bots never hold more than 10% of a company and never run one: control
+   only changes when a company's controller hands it over to a player.
    This file runs both in Node (firebase-admin) and in the browser tests.
    ===================================================================== */
 (function (root) {
@@ -32,22 +44,68 @@
   const MAX_RESTING = 4;           // orders each bot leaves on the books
   const AVG_TRADES = 20;
 
-  // horizon: hours of dividends a share is worth to them · buyAt / sellAt: multiples of that value
-  // perAsset: most of their Cash they'll put into one asset in a run · piBand: how far from Pi's
-  // average they buy and sell · piShare: most of their Cash they'll hold in Pi
+  const BAND_LO = 0.8, BAND_HI = 1.25;   // bots trade with bots only within this range of the reference price
+  const MEMORY = 72;                     // observations kept per company (about 3 days of hourly runs)
+
+  // horizon: hours of future dividends a share is worth to them · optimism: how much of a company's
+  // spare earnings (earned but not yet paid out) they expect to come back as higher dividends ·
+  // buyAt / sellAt: multiples of their valuation they buy below and sell above · perAsset: most of their
+  // Cash put into one asset per run · piBand: how far from Pi's reference price they trade · piShare:
+  // most of their wealth they'll keep in Pi
   const BOTS = [
-    { id: "bot-01", name: "Ada (bot)",     horizon: 720,  buyAt: 0.80, sellAt: 1.50, perAsset: 0.10, piBand: 0.12, piShare: 0.10 },
-    { id: "bot-02", name: "Bram (bot)",    horizon: 336,  buyAt: 0.90, sellAt: 1.30, perAsset: 0.12, piBand: 0.08, piShare: 0.20 },
-    { id: "bot-03", name: "Cleo (bot)",    horizon: 168,  buyAt: 1.00, sellAt: 1.25, perAsset: 0.15, piBand: 0.10, piShare: 0.05 },
-    { id: "bot-04", name: "Dex (bot)",     horizon: 1440, buyAt: 0.70, sellAt: 2.00, perAsset: 0.08, piBand: 0.15, piShare: 0.10 },
-    { id: "bot-05", name: "Esme (bot)",    horizon: 480,  buyAt: 0.85, sellAt: 1.40, perAsset: 0.10, piBand: 0.05, piShare: 0.30 },
-    { id: "bot-06", name: "Finn (bot)",    horizon: 240,  buyAt: 0.95, sellAt: 1.20, perAsset: 0.20, piBand: 0.20, piShare: 0.00 },
-    { id: "bot-07", name: "Gia (bot)",     horizon: 960,  buyAt: 0.75, sellAt: 1.60, perAsset: 0.06, piBand: 0.10, piShare: 0.15 },
-    { id: "bot-08", name: "Hugo (bot)",    horizon: 120,  buyAt: 1.05, sellAt: 1.15, perAsset: 0.10, piBand: 0.06, piShare: 0.25 },
-    { id: "bot-09", name: "Iris (bot)",    horizon: 600,  buyAt: 0.80, sellAt: 1.35, perAsset: 0.12, piBand: 0.09, piShare: 0.10 },
-    { id: "bot-10", name: "Jules (bot)",   horizon: 360,  buyAt: 0.90, sellAt: 1.45, perAsset: 0.14, piBand: 0.18, piShare: 0.05 }
+    { id: "bot-01", name: "Ada (bot)",   horizon: 720, optimism: 0.5, buyAt: 0.85, sellAt: 1.30, perAsset: 0.10, piBand: 0.12, piShare: 0.10 },
+    { id: "bot-02", name: "Bram (bot)",  horizon: 480, optimism: 0.7, buyAt: 0.90, sellAt: 1.25, perAsset: 0.12, piBand: 0.08, piShare: 0.20 },
+    { id: "bot-03", name: "Cleo (bot)",  horizon: 336, optimism: 0.3, buyAt: 0.95, sellAt: 1.20, perAsset: 0.15, piBand: 0.10, piShare: 0.05 },
+    { id: "bot-04", name: "Dex (bot)",   horizon: 960, optimism: 0.2, buyAt: 0.80, sellAt: 1.40, perAsset: 0.08, piBand: 0.15, piShare: 0.10 },
+    { id: "bot-05", name: "Esme (bot)",  horizon: 600, optimism: 0.9, buyAt: 0.85, sellAt: 1.30, perAsset: 0.10, piBand: 0.05, piShare: 0.30 },
+    { id: "bot-06", name: "Finn (bot)",  horizon: 240, optimism: 0.4, buyAt: 0.95, sellAt: 1.15, perAsset: 0.20, piBand: 0.20, piShare: 0.00 },
+    { id: "bot-07", name: "Gia (bot)",   horizon: 840, optimism: 0.6, buyAt: 0.80, sellAt: 1.35, perAsset: 0.06, piBand: 0.10, piShare: 0.15 },
+    { id: "bot-08", name: "Hugo (bot)",  horizon: 168, optimism: 0.1, buyAt: 1.00, sellAt: 1.10, perAsset: 0.10, piBand: 0.06, piShare: 0.25 },
+    { id: "bot-09", name: "Iris (bot)",  horizon: 540, optimism: 0.8, buyAt: 0.85, sellAt: 1.30, perAsset: 0.12, piBand: 0.09, piShare: 0.10 },
+    { id: "bot-10", name: "Jules (bot)", horizon: 400, optimism: 0.5, buyAt: 0.90, sellAt: 1.35, perAsset: 0.14, piBand: 0.18, piShare: 0.05 }
   ];
   const isBot = (uid) => typeof uid === "string" && uid.startsWith("bot-");
+
+  /* ---------- predicting a company ----------
+     From the bots' notes on a company (oldest first) and the company as it is now, estimate its
+     dividend, how reliably it's paid, what it earns per hour and how long its treasury lasts. */
+  function forecast(c, notes, now = Date.now()) {
+    const HOUR = 3600000, div = c.dividendPerHour || 0;
+    const past = (notes || []).filter((n) => n.at < now - 30 * 60000);
+    // Reliability: share of recent payout hours that were actually paid
+    const lp = c.lastPayout;
+    const paid = past.reduce((a, n) => a + (n.paidHours || 0), 0) + (lp ? lp.paidHours : 0);
+    const due = past.reduce((a, n) => a + (n.hours || 0), 0) + (lp ? lp.hours : 0);
+    const reliable = due ? paid / due : c.treasury >= div * 24 ? 0.9 : 0.5;
+    // Earnings per hour: treasury growth plus what it paid out over the same stretch
+    let earn = null;
+    if (past.length) {
+      const first = past[0], hours = Math.max(1, (now - first.at) / HOUR);
+      const paidOut = past.slice(1).reduce((a, n) => a + (n.paidCash || 0), 0);
+      earn = (c.treasury - first.treasury + paidOut) / hours;
+    }
+    // Runway: hours today's treasury pays today's dividend without new earnings
+    const runway = div ? c.treasury / div : Infinity;
+    return { div, reliable: Math.max(0, Math.min(1, reliable)), earn, runway };
+  }
+  // What one share is worth to a bot: the dividends it expects over its horizon, per share (cents)
+  function shareValue(b, c, f) {
+    const H = b.horizon;
+    let total;
+    if (f.earn == null) {
+      // No history yet: today's dividend, for as long as the treasury can fund it
+      total = f.div * Math.min(H, f.runway);
+    } else if (f.earn >= f.div) {
+      // Earns more than it pays: today's dividend is safe, and some of the spare may come back as raises
+      total = (f.div + b.optimism * (f.earn - f.div)) * H;
+    } else {
+      // Pays more than it earns: today's dividend until the treasury runs dry, then only what it earns
+      const lasts = c.treasury / (f.div - Math.max(0, f.earn));
+      const k = Math.min(H, lasts);
+      total = f.div * k + Math.max(0, f.earn) * (H - k);
+    }
+    return Math.max(0, total * f.reliable) / c.shares;
+  }
 
   async function runBots({ db, FieldValue, log = () => {}, only = null }) {
     const inc = (n) => FieldValue.increment(n);
@@ -60,6 +118,8 @@
     const tradesCol = (asset) => db.collection("market").doc(asset).collection("trades");
     const asOrder = (s) => ({ ref: s.ref, id: s.id, ...s.data() });
     const isPi = (a) => a === "PI";
+    const inBand = (p, ref) => !!ref && p >= ref * BAND_LO && p <= ref * BAND_HI;
+    const memRef = (t) => db.collection("botMemory").doc(t);
     const summary = [];
     const bots = only ? BOTS.filter((b) => only.includes(b.id)) : BOTS;
 
@@ -74,18 +134,19 @@
     }
 
     /* ---------- one trade: same steps as a player's order (fill up to 9 resting orders, rest the remainder) ---------- */
-    async function trade(b, asset, side, price, qty, rest) {
+    async function trade(b, asset, side, price, qty, rest, ref) {
       const other = side === "buy" ? "sell" : "buy";
       const crosses = (p) => (side === "buy" ? p <= price : p >= price);
       const better = (a, c) => (side === "buy" ? a.p - c.p : c.p - a.p) || ms(a.createdAt) - ms(c.createdAt);
       const snap = await book(asset, other).orderBy("p", side === "buy" ? "asc" : "desc").limit(DEPTH).get();
-      const opposite = snap.docs.map(asOrder).filter((o) => typeof o.p === "number");
-      // Bots never trade with each other (that would invent prices nobody paid), and a resting order
-      // stops one cent short of any other bot's order on the other side, so the book never crosses
-      const botBest = opposite.filter((o) => isBot(o.uid)).map((o) => o.p);
-      if (rest && botBest.length) price = side === "buy" ? Math.min(price, Math.min(...botBest) - 1) : Math.max(price, Math.max(...botBest) + 1);
+      const opposite = snap.docs.map(asOrder).filter((o) => typeof o.p === "number" && o.uid !== b.id);
+      // Another bot's order only counts if its price is close to the reference price
+      const ok = (o) => !isBot(o.uid) || inBand(o.p, ref);
+      // A resting order stops one cent short of any bot order it isn't allowed to trade with
+      const blocked = opposite.filter((o) => !ok(o) && crosses(o.p)).map((o) => o.p);
+      if (rest && blocked.length) price = side === "buy" ? Math.min(price, Math.min(...blocked) - 1) : Math.max(price, Math.max(...blocked) + 1);
       if (!(price >= 1)) return { filled: 0, value: 0, rest: 0 };
-      const candidates = opposite.filter((o) => crosses(o.p) && !isBot(o.uid)).sort(better);
+      const candidates = opposite.filter((o) => crosses(o.p) && ok(o)).sort(better);
       if (!candidates.length && !rest) return { filled: 0, value: 0, rest: 0 };
       return db.runTransaction(async (tx) => {
         const meSnap = await tx.get(userRef(b.id));
@@ -93,7 +154,7 @@
         const company = isPi(asset) ? null : await tx.get(companyRef(asset));
         const fresh = [];
         for (const c of candidates) { const s = await tx.get(c.ref); if (s.exists) fresh.push(asOrder(s)); }
-        const live = fresh.filter((o) => typeof o.p === "number" && o.remaining > 0 && !isBot(o.uid) && crosses(o.p)).sort(better);
+        const live = fresh.filter((o) => typeof o.p === "number" && o.remaining > 0 && o.uid !== b.id && ok(o) && crosses(o.p)).sort(better);
         const fills = [];
         let left = qty;
         for (const o of live) {
@@ -156,7 +217,7 @@
           tx.set(holderRef(asset, b.id), { uid: b.id, name: b.name, shares: held }, { merge: true });
           if (fills.length && company && company.exists) tx.update(companyRef(asset), { lastPrice: fills[fills.length - 1].o.p });
         }
-        return { filled, value, rest: restQty };
+        return { filled, value, rest: restQty, price };
       });
     }
 
@@ -201,10 +262,10 @@
 
     /* ---------- the market as it stands ---------- */
     const companies = (await db.collection("companies").get()).docs.map((d) => d.data()).filter((c) => c && c.shares > 0);
-    // Best price a player is offering (bots' own orders don't count: bots don't trade with bots)
-    async function top(asset, side) {
+    // Best price on the other side this bot may trade with: players at any price, bots near the reference
+    async function top(asset, side, ref, me) {
       const s = await book(asset, side).orderBy("p", side === "buy" ? "desc" : "asc").limit(DEPTH).get();
-      const o = s.docs.map(asOrder).find((x) => typeof x.p === "number" && !isBot(x.uid));
+      const o = s.docs.map(asOrder).find((x) => typeof x.p === "number" && x.uid !== me && (!isBot(x.uid) || inBand(x.p, ref)));
       return o ? o.p : null;
     }
     // What players have actually paid lately (trades between two bots don't count)
@@ -214,8 +275,26 @@
       const q = ts.reduce((a, t) => a + t.qty, 0);
       return q ? ts.reduce((a, t) => a + t.qty * t.price, 0) / q : null;
     }
-    const piAvg = await playerAvg("PI");
-    const MAX_CHASE = 1.25;      // never bid more than 25% above what players have recently paid
+
+    // Read the notes on every company, forecast it, and add this run's observation
+    const view = new Map();
+    for (const c of companies) {
+      const m = await memRef(c.ticker).get();
+      const notes = (m.exists && m.data().notes) || [];
+      const f = forecast(c, notes);
+      const values = BOTS.map((x) => shareValue(x, c, f));
+      const consensus = values.reduce((a, v) => a + v, 0) / values.length;
+      const players = c.tradingClosed ? null : await playerAvg(c.ticker);
+      view.set(c.ticker, { f, ref: players || (consensus >= 1 ? consensus : null) });
+      // Count each payout once: only a payout newer than the last one noted
+      const lastSeen = notes.length ? notes[notes.length - 1].payoutAt || 0 : 0;
+      const lp = c.lastPayout && c.lastPayout.at > lastSeen ? c.lastPayout : null;
+      const note = { at: Date.now(), treasury: c.treasury, div: c.dividendPerHour || 0,
+        paidHours: lp ? lp.paidHours : 0, hours: lp ? lp.hours : 0, paidCash: lp ? lp.amount : 0, payoutAt: lp ? lp.at : lastSeen };
+      if (!only) await memRef(c.ticker).set({ ticker: c.ticker, notes: [...notes, note].slice(-MEMORY),
+        forecast: { earn: f.earn, reliable: f.reliable, runway: Number.isFinite(f.runway) ? f.runway : null }, updatedAt: Date.now() });
+    }
+    const piRef = await playerAvg("PI");
 
     /* ---------- each bot ---------- */
     for (const b of bots) {
@@ -224,13 +303,14 @@
       const wallet = () => userRef(b.id).get().then((s) => s.data() || {});
       const holding = (t) => holderRef(t, b.id).get().then((s) => (s.exists && s.data().shares) || 0);
       const resting = [];
+      const sideTaken = new Map();     // asset → "buy" or "sell" this run: never both
 
       for (const c of companies) {
-        const fair = (c.treasury + b.horizon * (c.dividendPerHour || 0)) / c.shares;   // cents per share
-        const recent = c.tradingClosed ? null : await playerAvg(c.ticker);
-        let bid = Math.floor(fair * b.buyAt);
-        if (recent) bid = Math.min(bid, Math.floor(recent * MAX_CHASE));
-        const ask = Math.max(1, Math.ceil(fair * b.sellAt), recent ? Math.ceil(recent) : 1);
+        const { f, ref } = view.get(c.ticker);
+        const value = shareValue(b, c, f);          // cents per share, from expected dividends
+        let bid = Math.floor(value * b.buyAt);
+        if (ref) bid = Math.min(bid, Math.floor(ref * BAND_HI));
+        const ask = Math.max(1, Math.ceil(value * b.sellAt), ref ? Math.ceil(ref * BAND_LO) : 1);
         const cap = Math.floor(MAX_STAKE * c.shares);
         let held = await holding(c.ticker);
         const w = await wallet();
@@ -239,59 +319,61 @@
         // New shares from the company itself
         if (bid >= 1 && c.offerLeft > 0 && c.offerPrice > 0 && c.offerPrice <= bid && held < cap) {
           const n = await buyOffering(b, c.ticker, Math.min(cap - held, Math.floor(budget / c.offerPrice)));
-          if (n) { did.push(`bought ${n.toLocaleString()} new ${c.ticker} shares at $${(c.offerPrice / 100).toFixed(2)}`); held += n; }
+          if (n) { did.push(`bought ${n.toLocaleString()} new ${c.ticker} shares at $${(c.offerPrice / 100).toFixed(2)}`); held += n; sideTaken.set(c.ticker, "buy"); }
         }
         if (c.tradingClosed) continue;
 
-        // Players selling cheap / buying dear
-        const bestAsk = await top(c.ticker, "sell"), bestBid = await top(c.ticker, "buy");
-        if (bid >= 1 && bestAsk != null && bestAsk <= bid && held < cap) {
+        // Shares offered well under what it expects them to pay, or bids well over
+        const bestAsk = await top(c.ticker, "sell", ref, b.id), bestBid = await top(c.ticker, "buy", ref, b.id);
+        if (bid >= 1 && bestAsk != null && bestAsk <= bid && held < cap && sideTaken.get(c.ticker) !== "sell") {
           const qty = Math.min(cap - held, Math.floor(budget / bid));
           if (qty > 0) {
-            const r = await trade(b, c.ticker, "buy", bid, qty, false);
-            if (r.filled) { did.push(`bought ${r.filled.toLocaleString()} ${c.ticker} shares`); held += r.filled; }
+            const r = await trade(b, c.ticker, "buy", bid, qty, false, ref);
+            if (r.filled) { did.push(`bought ${r.filled.toLocaleString()} ${c.ticker} shares`); held += r.filled; sideTaken.set(c.ticker, "buy"); }
           }
         }
-        if (held > 0 && bestBid != null && bestBid >= ask) {
-          const r = await trade(b, c.ticker, "sell", ask, held, false);
-          if (r.filled) { did.push(`sold ${r.filled.toLocaleString()} ${c.ticker} shares`); held -= r.filled; }
+        if (held > 0 && bestBid != null && bestBid >= ask && sideTaken.get(c.ticker) !== "buy") {
+          const r = await trade(b, c.ticker, "sell", ask, held, false, ref);
+          if (r.filled) { did.push(`sold ${r.filled.toLocaleString()} ${c.ticker} shares`); held -= r.filled; sideTaken.set(c.ticker, "sell"); }
         }
         // Orders to leave on the book (best value first)
-        if (bid >= 1 && held < cap) resting.push({ asset: c.ticker, side: "buy", price: bid, qty: Math.min(cap - held, Math.floor(budget / bid)), score: fair / Math.max(1, bestAsk || bid) });
+        if (bid >= 1 && held < cap && sideTaken.get(c.ticker) !== "sell")
+          resting.push({ asset: c.ticker, ref, side: "buy", price: bid, qty: Math.min(cap - held, Math.floor(budget / bid)), score: value / Math.max(1, bestAsk || bid) });
         // Offer half for sale; the other half stays put earning dividends (shares in a sell order don't)
-        if (held > 0) resting.push({ asset: c.ticker, side: "sell", price: ask, qty: Math.ceil(held / 2), score: 1 });
+        if (held > 0 && sideTaken.get(c.ticker) !== "buy")
+          resting.push({ asset: c.ticker, ref, side: "sell", price: ask, qty: Math.ceil(held / 2), score: 1 });
       }
 
-      // Pi coin, around its recent average price
-      if (piAvg) {
-        const bid = Math.max(1, Math.floor(piAvg * (1 - b.piBand))), ask = Math.max(bid + 1, Math.ceil(piAvg * (1 + b.piBand)));
+      // Pi coin pays no dividend: bots just trade it around its reference price
+      if (piRef) {
+        const bid = Math.max(1, Math.floor(piRef * (1 - b.piBand))), ask = Math.max(bid + 1, Math.ceil(piRef * (1 + b.piBand)));
         const w = await wallet();
-        const worth = (w.cash || 0) + (w.coins || 0) * piAvg;
-        const room = Math.floor(Math.max(0, worth * b.piShare - (w.coins || 0) * piAvg) / bid);
-        const bestAsk = await top("PI", "sell"), bestBid = await top("PI", "buy");
+        const worth = (w.cash || 0) + (w.coins || 0) * piRef;
+        const room = Math.floor(Math.max(0, worth * b.piShare - (w.coins || 0) * piRef) / bid);
+        const bestAsk = await top("PI", "sell", piRef, b.id), bestBid = await top("PI", "buy", piRef, b.id);
         if (room > 0 && bestAsk != null && bestAsk <= bid) {
-          const r = await trade(b, "PI", "buy", bid, room, false);
-          if (r.filled) did.push(`bought ${r.filled.toLocaleString()} Pi`);
+          const r = await trade(b, "PI", "buy", bid, room, false, piRef);
+          if (r.filled) { did.push(`bought ${r.filled.toLocaleString()} Pi`); sideTaken.set("PI", "buy"); }
         }
         const coins = (await wallet()).coins || 0;
-        if (coins > 0 && bestBid != null && bestBid >= ask) {
-          const r = await trade(b, "PI", "sell", ask, Math.ceil(coins / 2), false);
-          if (r.filled) did.push(`sold ${r.filled.toLocaleString()} Pi`);
+        if (coins > 0 && bestBid != null && bestBid >= ask && sideTaken.get("PI") !== "buy") {
+          const r = await trade(b, "PI", "sell", ask, Math.ceil(coins / 2), false, piRef);
+          if (r.filled) { did.push(`sold ${r.filled.toLocaleString()} Pi`); sideTaken.set("PI", "sell"); }
         }
         const w2 = await wallet();
-        const room2 = Math.floor(Math.max(0, ((w2.cash || 0) + (w2.coins || 0) * piAvg) * b.piShare - (w2.coins || 0) * piAvg) / bid);
-        if (room2 > 0) resting.push({ asset: "PI", side: "buy", price: bid, qty: room2, score: 0.9 });
-        if (w2.coins > 0) resting.push({ asset: "PI", side: "sell", price: ask, qty: Math.ceil(w2.coins / 2), score: 0.9 });
+        const room2 = Math.floor(Math.max(0, ((w2.cash || 0) + (w2.coins || 0) * piRef) * b.piShare - (w2.coins || 0) * piRef) / bid);
+        if (room2 > 0 && sideTaken.get("PI") !== "sell") resting.push({ asset: "PI", ref: piRef, side: "buy", price: bid, qty: room2, score: 0.9 });
+        if (w2.coins > 0 && sideTaken.get("PI") !== "buy") resting.push({ asset: "PI", ref: piRef, side: "sell", price: ask, qty: Math.ceil(w2.coins / 2), score: 0.9 });
       }
 
-      // Leave a few orders for players to trade with
+      // Leave a few orders on the books
       resting.sort((x, y) => y.score - x.score);
       let placed = 0;
       for (const o of resting) {
         if (placed >= MAX_RESTING || !(o.qty > 0)) continue;
-        const r = await trade(b, o.asset, o.side, o.price, o.qty, true);
+        const r = await trade(b, o.asset, o.side, o.price, o.qty, true, o.ref);
         if (r.filled) did.push(`${o.side === "buy" ? "bought" : "sold"} ${r.filled.toLocaleString()} ${o.asset === "PI" ? "Pi" : `${o.asset} shares`}`);
-        if (r.rest) { placed++; did.push(`left an order to ${o.side} ${r.rest.toLocaleString()} ${o.asset === "PI" ? "Pi" : o.asset} at $${(o.price / 100).toFixed(2)}`); }
+        if (r.rest) { placed++; did.push(`left an order to ${o.side} ${r.rest.toLocaleString()} ${o.asset === "PI" ? "Pi" : o.asset} at $${(r.price / 100).toFixed(2)}`); }
       }
       const w = await wallet();
       summary.push({ bot: b.name, cash: w.cash, coins: w.coins || 0, did });
@@ -300,7 +382,7 @@
     return summary;
   }
 
-  const api = { runBots, BOTS, isBot, START_CASH, MAX_STAKE };
+  const api = { runBots, BOTS, isBot, forecast, shareValue, START_CASH, MAX_STAKE, BAND_LO, BAND_HI };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.PiBots = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
