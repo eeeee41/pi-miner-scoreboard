@@ -1,8 +1,11 @@
 {
   "name": "pi-miner-bots",
   "private": true,
-  "type": "module",
   "description": "Ten investor bots for Pi Miner, run on a schedule by GitHub Actions",
-  "scripts": { "start": "node run.mjs" },
-  "dependencies": { "firebase-admin": "^12.7.0" }
+  "scripts": {
+    "start": "node run.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0"
+  }
 }

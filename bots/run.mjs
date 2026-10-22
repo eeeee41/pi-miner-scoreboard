@@ -19,9 +19,29 @@ try { key = JSON.parse(raw); } catch {
   console.error("FIREBASE_SERVICE_ACCOUNT isn't valid JSON. Paste the whole downloaded key file as the secret's value.");
   process.exit(1);
 }
-admin.initializeApp({ credential: admin.credential.cert(key) });
+try {
+  admin.initializeApp({ credential: admin.credential.cert(key) });
+} catch (e) {
+  console.error(`That key didn't work: ${e.message}\nMake a new one in Firebase → Project settings → Service accounts → ` +
+    "Generate new private key, and paste the whole file as the FIREBASE_SERVICE_ACCOUNT secret.");
+  process.exit(1);
+}
 const db = admin.firestore();
+console.log(`Running the investor bots for project ${key.project_id}`);
 
 const started = Date.now();
-const summary = await runBots({ db, FieldValue, log: (line) => console.log(line) });
-console.log(`Done: ${summary.length} bots in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+try {
+  const summary = await runBots({ db, FieldValue, log: (line) => console.log(line) });
+  console.log(`Done: ${summary.length} bots in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+} catch (e) {
+  const msg = String(e && e.message || e);
+  console.error(`The bots stopped: ${msg}`);
+  if (/PERMISSION_DENIED|permission/i.test(msg))
+    console.error("Hint: the key's service account needs access to Firestore. Use the key from Firebase → Project settings → " +
+      "Service accounts (the firebase-adminsdk account), for the piminerscoreboard project.");
+  if (/UNAUTHENTICATED|invalid_grant|JWT/i.test(msg))
+    console.error("Hint: the key was rejected. It may have been deleted or pasted incompletely: make a new one and update the secret.");
+  if (/FAILED_PRECONDITION|index/i.test(msg))
+    console.error("Hint: Firestore wants an index for one of the bots' queries. The message above has a link that creates it in one click.");
+  process.exit(1);
+}
