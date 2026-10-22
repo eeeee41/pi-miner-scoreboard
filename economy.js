@@ -329,6 +329,8 @@ const Economy = (() => {
     if (typeof Factory !== "undefined") await Factory.upkeep().catch((err) => console.warn("Factory upkeep:", err));   // bank car sales first
     if (typeof Companies !== "undefined") await Companies.upkeep().catch((err) => console.warn("Company upkeep:", err));
     if (typeof Market !== "undefined") await Market.upkeep().catch((err) => console.warn("Market upkeep:", err));
+    if (typeof Work !== "undefined") await Work.upkeep().catch((err) => console.warn("Work upkeep:", err));
+    if (typeof Bank !== "undefined") await Bank.upkeep().catch((err) => console.warn("Bank upkeep:", err));
   }
 
   /* ---------- order form ---------- */
@@ -596,6 +598,15 @@ const Economy = (() => {
       switch (h.kind) {
         case "grant": text = "Starting Cash"; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
         case "piGrant": text = "Starter Pi, for transaction fees"; amt = ["pos", `+${fmtPi(h.amount)}`]; break;
+        case "job": text = `Shift as a ${String(h.job).toLowerCase()} (${h.hours} hour${h.hours === 1 ? "" : "s"})`; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
+        case "wage": text = `Wages from ${a} (${h.hours} hour${h.hours === 1 ? "" : "s"})`; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
+        case "bank": {
+          const B = { deposit: ["Deposited in the bank", "", "−"], withdraw: ["Withdrew from the bank", "pos", "+"], borrow: ["Borrowed from the bank", "pos", "+"],
+            repay: ["Repaid the bank", "", "−"], liquidated: ["Loan closed: the bank kept your collateral", "", "−"] }[h.action] || ["Bank", "", ""];
+          text = B[0];
+          amt = [B[1], h.action === "liquidated" ? `${B[2]}${fmtPi(h.amount)}` : `${B[2]}${fmtCash(h.amount)}`];
+          break;
+        }
         case "block":
           text = `Mined block #${h.height}${h.trades ? `, confirming ${h.trades} trade${h.trades === 1 ? "" : "s"}` : ""}${h.fees ? `, plus ${fmtPi(h.fees)} in fees` : ""}`;
           amt = ["pos", `+${fmtPi(h.reward + (h.fees || 0))}`]; break;
@@ -632,7 +643,7 @@ const Economy = (() => {
   }
 
   /* ---------- tabs ---------- */
-  const TABS = ["mine", "wallet", "exchange", "stocks", "factory", "market"];
+  const TABS = ["mine", "wallet", "exchange", "stocks", "factory", "market", "work", "bank"];
   function showTab(name) {
     if (!TABS.includes(name)) name = "mine";
     document.body.dataset.tab = name;          // lets page-wide pieces (like the Employees panel) follow the tab

@@ -425,6 +425,8 @@
       <button class="tab" role="tab" id="tabBtn-stocks" data-tab="stocks" aria-selected="false">Stocks</button>
       <button class="tab" role="tab" id="tabBtn-factory" data-tab="factory" aria-selected="false">Factory</button>
       <button class="tab" role="tab" id="tabBtn-market" data-tab="market" aria-selected="false">Market</button>
+      <button class="tab" role="tab" id="tabBtn-work" data-tab="work" aria-selected="false">Work</button>
+      <button class="tab" role="tab" id="tabBtn-bank" data-tab="bank" aria-selected="false">Bank</button>
     </nav>
 
     <div id="tab-mine" role="tabpanel">
@@ -487,6 +489,61 @@
       <div class="card" style="margin-top: 16px">
         <h2>History</h2>
         <div id="wHistory"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+
+    <!-- ===== Work ===== -->
+    <div id="tab-work" role="tabpanel" class="hidden">
+      <div class="status" id="jMsg" role="status" aria-live="polite"></div>
+      <div class="factory-grid">
+        <div class="card">
+          <h2>Day jobs</h2>
+          <p class="co-note" style="margin: -6px 0 12px">Work a shift and get paid when it ends. No company needed.</p>
+          <div id="jShift"></div>
+          <div id="jDayJobs"></div>
+        </div>
+        <div class="card">
+          <h2>Jobs at companies</h2>
+          <p class="co-note" style="margin: -6px 0 12px">Join a player's company. Its treasury pays your wage every hour, and your skill grows the longer you stay.</p>
+          <h3 class="sub-h">Your job</h3>
+          <div id="jMine"></div>
+          <h3 class="sub-h">Openings</h3>
+          <div id="jBoard"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Bank ===== -->
+    <div id="tab-bank" role="tabpanel" class="hidden">
+      <div class="card">
+        <h2>Your bank account</h2>
+        <div class="status" id="bMsg" role="status" aria-live="polite"></div>
+        <div id="bSummary"></div>
+      </div>
+      <div class="factory-grid" style="margin-top: 16px">
+        <div class="card">
+          <h2>Deposits</h2>
+          <p class="co-note" style="margin: -6px 0 12px">Cash in the bank earns 0.25% a day, and robbers can't touch it.</p>
+          <div class="co-form">
+            <label class="field" for="bAmount"><span>Amount ($)</span><input id="bAmount" type="number" min="0.01" step="0.01" value="100.00" /></label>
+          </div>
+          <div class="co-form">
+            <button class="btn-primary buy" id="bDeposit">Deposit</button>
+            <button class="btn-ghost" id="bWithdraw">Withdraw</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Loans</h2>
+          <p class="co-note" style="margin: -6px 0 12px">Lock Pi as collateral and borrow up to half of what it's worth, at 1% a day. If you come to owe 80% of its value, the bank keeps the Pi.</p>
+          <div class="co-form">
+            <label class="field" for="bLockPi"><span>Pi to lock</span><input id="bLockPi" type="number" min="0" step="1" value="10" /></label>
+            <label class="field" for="bLoanAmount"><span>Amount ($)</span><input id="bLoanAmount" type="number" min="0.01" step="0.01" value="10.00" /></label>
+          </div>
+          <div class="co-form">
+            <button class="btn-primary buy" id="bBorrow">Borrow</button>
+            <button class="btn-ghost" id="bRepay">Repay</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -718,6 +775,16 @@
       <h3 class="sub-h">Hire</h3>
       <div id="fPool"></div>
     </div>
+    <div class="co-sec hidden" id="fJobsCard">
+      <h3 class="sub-h">Hire a player</h3>
+      <p class="co-note">Post an opening on every player's Work tab. Whoever takes it joins your staff, is paid from the treasury every hour, and gains a skill level for every 24 hours worked.</p>
+      <div class="co-form">
+        <label class="field" for="fJobRole"><span>Role</span><select id="fJobRole"></select></label>
+        <label class="field" for="fJobWage"><span>Wage ($/hour)</span><input id="fJobWage" type="number" min="1" step="0.01" value="15.00" /></label>
+      </div>
+      <button class="btn-ghost" id="fJobPost">Post opening (1 Pi)</button>
+      <div id="fOpenings"></div>
+    </div>
   </div>
 </aside>
 
@@ -727,16 +794,18 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <!-- Game scripts. Bump ?v= on every release so browsers never mix old and new files. -->
 <!-- Phase 1: wallets and the Pi coin exchange -->
-<script src="economy.js?v=20261022-1700"></script>
+<script src="economy.js?v=20261022-1900"></script>
 <!-- Phase 2: companies, shares and dividends -->
-<script src="companies.js?v=20261022-1700"></script>
+<script src="companies.js?v=20261022-1900"></script>
 <!-- Phase 3: production -->
-<script src="factory.js?v=20261022-1700"></script>
+<script src="factory.js?v=20261022-1900"></script>
 <!-- Phase 4: marketplace for goods -->
-<script src="contracts.js?v=20261022-1700"></script>
-<script src="market.js?v=20261022-1700"></script>
+<script src="contracts.js?v=20261022-1900"></script>
+<script src="work.js?v=20261022-1900"></script>
+<script src="bank.js?v=20261022-1900"></script>
+<script src="market.js?v=20261022-1900"></script>
 
 <!-- Mining on the shared Pi blockchain + sign-in (loads last) -->
-<script src="miner.js?v=20261022-1700"></script>
+<script src="miner.js?v=20261022-1900"></script>
 </body>
 </html>

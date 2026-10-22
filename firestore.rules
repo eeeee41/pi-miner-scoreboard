@@ -47,6 +47,7 @@ service cloud.firestore {
           (request.auth.uid == uid && ownEntry(entry, uid))
           || tradeEntry(entry)
           || dividendEntry()
+          || wageEntry()
           || expiryEntry(uid)
         );
         allow update, delete: if false;
@@ -63,6 +64,8 @@ service cloud.firestore {
           && minedBy(d.height, uid, d.reward))
         || (entry == 'starting-cash' && d.kind == 'grant' && d.amount == 1000000)
         || (entry == 'starting-pi' && d.kind == 'piGrant' && d.amount == 10)
+        || (d.kind == 'job' && d.keys().hasOnly(['kind', 'job', 'amount', 'hours', 'at']) && d.amount is int && d.at == request.time)
+        || (d.kind == 'bank' && d.keys().hasOnly(['kind', 'action', 'amount', 'at']) && d.amount is int && d.at == request.time)
         || (d.kind in ['founded', 'offering', 'deposit']
           && d.keys().hasOnly(['kind', 'asset', 'amount', 'qty', 'price', 'at'])
           && d.at == request.time
@@ -84,6 +87,14 @@ service cloud.firestore {
         && d.amount is int && d.amount > 0
         && d.at == request.time;
     }
+    // A company paying a player employee's wages
+    function wageEntry() {
+      let d = request.resource.data;
+      return d.kind == 'wage'
+        && d.keys().hasOnly(['kind', 'asset', 'amount', 'hours', 'at'])
+        && d.amount is int && d.amount > 0 && d.hours is int && d.hours > 0
+        && d.at == request.time;
+    }
     function expiryEntry(uid) {
       let d = request.resource.data;
       return d.kind in ['bought', 'returned']
@@ -98,10 +109,13 @@ service cloud.firestore {
 
     // The owner trading, cancelling or collecting a block reward: balances stay whole and never go negative
     function walletChange() {
-      return changed().hasOnly(['cash', 'coins', 'blocksMined'])
-        && isCount(request.resource.data.get('cash', 0))
-        && isCount(request.resource.data.get('coins', 0))
-        && isCount(request.resource.data.get('blocksMined', 0));
+      let w = request.resource.data;
+      return changed().hasOnly(['cash', 'coins', 'blocksMined', 'shift', 'workXp', 'bank', 'bankAt', 'loan', 'loanAt', 'collateral'])
+        && isCount(w.get('cash', 0))
+        && isCount(w.get('coins', 0))
+        && isCount(w.get('blocksMined', 0))
+        && isCount(w.get('workXp', 0)) && isCount(w.get('bank', 0)) && isCount(w.get('loan', 0)) && isCount(w.get('collateral', 0))
+        && (w.get('shift', null) == null || w.shift is map);
     }
 
     // One-time $10,000 for players whose wallet predates the exchange
@@ -351,6 +365,42 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['load', 'at'])
         && request.resource.data.load is number && request.resource.data.load >= 0
         && request.resource.data.at is int && request.resource.data.at <= request.time.toMillis() + 60000;
+      allow delete: if false;
+    }
+
+    // ---------------- Jobs at companies ----------------
+    // A controller posts an opening; any player may take an open one; the player can quit;
+    // the controller runs everything else (starting them, ending it, hours worked).
+    function jobShape(j) {
+      return j.keys().hasOnly(['company', 'companyName', 'role', 'wage', 'status', 'player', 'playerName', 'hours', 'quit', 'createdAt', 'updatedAt'])
+        && j.role in ['worker', 'researcher', 'sales', 'manager']
+        && j.wage is int && j.wage >= 100 && j.wage <= 100000
+        && j.status in ['open', 'taken', 'active', 'ended', 'closed']
+        && isCount(j.hours) && j.quit is bool
+        && j.companyName is string && j.companyName.size() <= 40;
+    }
+    match /jobs/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && jobShape(request.resource.data)
+        && controls(request.resource.data.company)
+        && request.resource.data.status == 'open' && request.resource.data.hours == 0
+        && request.resource.data.player == null && request.resource.data.quit == false
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn() && jobShape(request.resource.data) && (
+        // taking an open job
+        (resource.data.status == 'open' && request.resource.data.status == 'taken'
+          && request.resource.data.player == request.auth.uid && validName(request.resource.data.playerName)
+          && changed().hasOnly(['status', 'player', 'playerName', 'updatedAt']))
+        // quitting your own job
+        || (resource.data.player == request.auth.uid && request.resource.data.quit == true
+          && changed().hasOnly(['quit', 'updatedAt']))
+        // the company's controller: start, end, withdraw, count hours (never changing who or what was agreed)
+        || (controls(resource.data.company)
+          && request.resource.data.company == resource.data.company && request.resource.data.role == resource.data.role
+          && request.resource.data.wage == resource.data.wage && request.resource.data.player == resource.data.player
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.hours >= resource.data.hours)
+      );
       allow delete: if false;
     }
 

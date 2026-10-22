@@ -668,6 +668,8 @@ function handleAuth(user) {
     Factory.signOut();
     Contracts.signOut();
     Market.signOut();
+    Work.signOut();
+    Bank.signOut();
     resetSession();
     $("dashboard").classList.add("hidden");
     $("userChip").classList.add("hidden");
@@ -690,6 +692,8 @@ function handleAuth(user) {
   Contracts.signIn(user);                      // supply contracts (before the factory opens one)
   Factory.signIn(user);                        // production
   Market.signIn(user);                         // goods marketplace
+  Work.signIn(user);                           // day jobs and jobs at companies
+  Bank.signIn(user);                           // deposits and loans
   const session = state.session;
   const live = (fn) => (...args) => { if (session === state.session) fn(...args); };
   const fail = (what) => live((err) => setStatus(`${what}: ${dbErrorMessage(err)}`, "err"));
@@ -764,6 +768,8 @@ if (typeof firebase === "undefined") {
   Factory.init(firebase, db);
   Contracts.init(firebase, db);
   Market.init(firebase, db);
+  Work.init(firebase, db);
+  Bank.init(firebase, db);
   auth.getRedirectResult().catch(showAuthError);
   auth.onAuthStateChanged(handleAuth);
 }

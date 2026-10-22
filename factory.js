@@ -263,7 +263,7 @@ const Factory = (() => {
 
   // Pay every whole hour since the last payday. If the treasury runs short, regular staff quit,
   // best-paid first; permanent staff can't quit, so the ones it can't pay go on strike until a payday works.
-  function payroll(f, now, treasury) {
+  function payroll(f, now, treasury, credits = new Map()) {
     const hourNow = Math.floor(now / HOUR) * HOUR;
     if (!staffOf(f).length) { f.wagesPaidTo = hourNow; return treasury; }
     const from = f.wagesPaidTo || hourNow;
@@ -276,6 +276,7 @@ const Factory = (() => {
           note("Payday worked: everyone on strike is back at work");
         }
         treasury -= payrollPerHour(f);
+        paidHour(f, credits);
         continue;
       }
       rebase(f, now, () => {
@@ -295,10 +296,49 @@ const Factory = (() => {
         if (struck) note(`${struck} permanent employee${struck === 1 ? "" : "s"} went on strike: the treasury couldn't pay them`);
       });
       treasury -= wagesOf(f.staff.filter((s) => !s.striking));
+      paidHour(f, credits);
     }
     f.wagesPaidTo = hours ? from + hours * HOUR : from;
     if (now - f.wagesPaidTo >= 168 * HOUR) f.wagesPaidTo = hourNow;   // more than a week behind: forgive the rest
     return treasury;
+  }
+
+  // One hour's wages went out: players on the staff get theirs in their wallet, and grow in skill
+  function paidHour(f, credits) {
+    for (const s of f.staff) {
+      if (!s.player || s.striking) continue;
+      const c = credits.get(s.player) || { amount: 0, hours: 0, jobId: s.jobId };
+      c.amount += s.wage; c.hours += 1;
+      credits.set(s.player, c);
+      s.hoursWorked = (s.hoursWorked || 0) + 1;
+      s.skill = Math.min(5, 1 + Math.floor(s.hoursWorked / 24));
+    }
+  }
+
+  // Players taking, working and leaving jobs posted by this company (jobs/{id}, see work.js)
+  function settleJobs(f, now, jobs) {
+    const note = (msg) => { f.news = [msg, ...(f.news || [])].slice(0, 8); };
+    for (const k of jobs) {
+      const j = k.data, sid = `p-${j.player}`;
+      const onStaff = f.staff.find((s) => s.id === sid);
+      if (j.status === "taken") {
+        if (f.staff.length >= MAX_STAFF) { j.status = "ended"; note(`${j.playerName} couldn't start: the company already has ${MAX_STAFF} employees`); }
+        else {
+          rebase(f, now, () => f.staff.push({ id: sid, name: j.playerName, role: j.role, skill: 1, wage: j.wage, line: null,
+            hiredAt: now, player: j.player, jobId: k.id, hoursWorked: j.hours || 0 }));
+          j.status = "active";
+          note(`${j.playerName} (a player) started as a ${ROLES[j.role].name.toLowerCase()} at ${fmtCash(j.wage)}/hour`);
+        }
+        k.dirty = true;
+      } else if (j.status === "active") {
+        if (!onStaff) { j.status = "ended"; k.dirty = true; }                  // let go, or quit for lack of pay
+        else if (j.quit) {
+          rebase(f, now, () => { f.staff = f.staff.filter((s) => s.id !== sid); });
+          j.status = "ended"; k.dirty = true;
+          note(`${j.playerName} (a player) quit`);
+        } else if ((onStaff.hoursWorked || 0) !== (j.hours || 0)) { j.hours = onStaff.hoursWorked || 0; k.dirty = true; }
+      }
+    }
   }
 
   // Running time, split into finished hours (billed at the next upkeep) and the hour under way
@@ -352,7 +392,8 @@ const Factory = (() => {
   }
 
   let fb = null, db = null, user = null, unsubs = [], factoryUnsub = null;
-  const st = { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0, demand: {}, demandKey: "" };
+  const st = { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0, demand: {}, demandKey: "", openings: [], openingsLoaded: false };
+  let openingsUnsub = null;
   let demandUnsubs = [];
 
   /* ---------- helpers ---------- */
@@ -443,7 +484,10 @@ const Factory = (() => {
      `pay` good) for every `every` units delivered. The payment is set aside (`escrow`) when the receiving
      company signs. Deliveries wait in the contract (`waiting`) until the receiver's factory collects them,
      and payments wait (`owed`) until the supplier's collects them, because each factory is private. */
-  const MAX_CONTRACTS_PER_ACT = 8;    // keeps every save under Firestore's 20 rule lookups
+  const MAX_CONTRACTS_PER_ACT = 6;    // with MAX_JOBS_PER_ACT, keeps every save under Firestore's 20 rule lookups
+  const MAX_JOBS_PER_ACT = 4;
+  const MAX_OPENINGS = 4;              // job openings a company can have posted at once
+  const jobsCol = () => db.collection("jobs");
   const OPEN = ["offered", "active"];
   const payDue = (d) => Math.floor(d.delivered / d.every) * d.per;
   // Units the supplier can hand over now: what's left of a fixed contract, or, for an ongoing one,
@@ -526,6 +570,10 @@ const Factory = (() => {
   async function act(change, t = st.ticker, opts = {}) {
     const uid = user.uid;
     const ids = [...new Set([...(await contractIds(t).catch(() => [])), ...(opts.contracts || [])])];
+    // Job postings that need attention (the Employees panel already follows the open company's live)
+    const posted = t === st.ticker && st.openingsLoaded ? st.openings
+      : await jobsCol().where("company", "==", t).limit(100).get().then((q) => q.docs.map((d) => ({ id: d.id, ...d.data() })));
+    const jobIds = posted.filter((j) => j.status === "taken" || j.status === "active").slice(0, MAX_JOBS_PER_ACT).map((j) => j.id);
     return db.runTransaction(async (tx) => {
       const c = (await tx.get(companyRef(t))).data();
       if (!c || c.controller !== uid) throw new Error("Only the company's controller can run its factory.");
@@ -542,20 +590,29 @@ const Factory = (() => {
         const d = await tx.get(contractsCol().doc(id));
         if (d.exists) contracts.push({ id, ref: d.ref, data: { ...d.data() }, dirty: false });
       }
+      const jobs = [];
+      for (const id of jobIds) {
+        const d = await tx.get(jobsCol().doc(id));
+        if (d.exists) jobs.push({ id, ref: d.ref, data: { ...d.data() }, dirty: false });
+      }
       // Paid actions cost a Pi fee from the player's wallet
       const meSnap = opts.fee ? await tx.get(db.collection("users").doc(uid)) : null;
       const now = Date.now(), made = {};
       let treasury = c.treasury + settle(f, now, dem, made);
       treasury = settleContracts(f, t, treasury, contracts, made);
       treasury = lineUpkeep(f, now, treasury);
-      treasury = payroll(f, now, treasury);
+      settleJobs(f, now, jobs);
+      const credits = new Map();
+      treasury = payroll(f, now, treasury, credits);
+      settleJobs(f, now, jobs);                 // anyone who just quit for lack of pay
       resume(f, now, treasury);
-      const ctx = { contracts, created: [] };
+      const ctx = { contracts, created: [], sets: [] };
       const res = change ? change(f, treasury, now, c, ctx) || {} : {};
       if (res.treasury != null) treasury = res.treasury;
       treasury = settleContracts(f, t, treasury, contracts, made);   // collect anything the change freed up (a refund, a delivery)
+      settleJobs(f, now, jobs);                 // someone the change let go
       resume(f, now, treasury);
-      if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury && !contracts.some((k) => k.dirty)) return "";   // nothing to save
+      if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury && !contracts.some((k) => k.dirty) && !jobs.some((k) => k.dirty)) return "";   // nothing to save
       if (treasury < 0) throw new Error(`The treasury only has ${fmtCash(c.treasury)}.`);
       if (meSnap) tx.update(meSnap.ref, { coins: Economy.payFee(tx, meSnap.data() || {}, opts.fee === true ? "That" : opts.fee) });
       tx.set(factoryRef(t), { ...f, updatedAt: fb.firestore.FieldValue.serverTimestamp() });
@@ -563,6 +620,15 @@ const Factory = (() => {
       for (const [k, d] of Object.entries(dem)) if (d.touched) tx.set(demandRef(k), { load: d.load, at: Math.round(d.at) });
       for (const k of contracts) if (k.dirty) tx.set(k.ref, { ...k.data, updatedAt: now });
       for (const d of ctx.created) tx.set(contractsCol().doc(), { ...d, createdAt: fb.firestore.FieldValue.serverTimestamp(), updatedAt: now });
+      for (const k of jobs) if (k.dirty) tx.set(k.ref, { ...k.data, updatedAt: now });
+      for (const w of ctx.sets) tx.set(w.ref, w.data);
+      // Wages for player employees go straight into their wallets
+      for (const [player, cr] of credits) {
+        if (!cr.amount) continue;
+        tx.update(db.collection("users").doc(player), { cash: fb.firestore.FieldValue.increment(cr.amount) });
+        tx.set(db.collection("users").doc(player).collection("history").doc(),
+          { kind: "wage", asset: t, amount: cr.amount, hours: cr.hours, at: fb.firestore.FieldValue.serverTimestamp() });
+      }
       return res.msg || "";
     });
   }
@@ -673,12 +739,24 @@ const Factory = (() => {
     const s = f.staff.find((x) => x.id === id);
     if (!s) throw new Error("That person no longer works here.");
     if (s.fixed) throw new Error(`${s.name} can't be trained. He's already off the charts.`);
+    if (s.player) throw new Error(`${s.name} is a player: their skill grows by working.`);
     if (s.skill >= 5) throw new Error(`${s.name} is already at the top skill level.`);
     const cost = trainCost(s.skill);
     if (treasury < cost) throw new Error(`Training costs ${fmtCash(cost)}; the treasury has ${fmtCash(treasury)}.`);
     rebase(f, now, () => { s.skill += 1; s.wage = wageFor(s.role, s.skill); });
     return { treasury: treasury - cost, msg: `✓ ${s.name} is now skill ${s.skill}; their wage is ${fmtCash(s.wage)}/hour.` };
   }, undefined, { fee: "Training" });
+
+  // Post a job opening for players (see work.js)
+  const postJob = (role, wage) => act((f, treasury, now, c, ctx) => {
+    const open = st.openings.filter((j) => j.status === "open" || j.status === "taken").length;
+    if (open >= MAX_OPENINGS) throw new Error(`A company can have at most ${MAX_OPENINGS} openings posted at once.`);
+    if (f.staff.length >= MAX_STAFF) throw new Error(`A company can employ at most ${MAX_STAFF} people.`);
+    ctx.sets.push({ ref: jobsCol().doc(), data: { company: st.ticker, companyName: c.name.slice(0, 40), role, wage, status: "open",
+      player: null, playerName: null, hours: 0, quit: false, createdAt: fb.firestore.FieldValue.serverTimestamp(), updatedAt: now } });
+    return { msg: `✓ Posted a ${ROLES[role].name.toLowerCase()} opening at ${fmtCash(wage)}/hour. It's on every player's Work tab.` };
+  }, undefined, { fee: "Posting a job" });
+  const withdrawJob = (id) => jobsCol().doc(id).update({ status: "closed", updatedAt: Date.now() }).then(() => "✓ Opening withdrawn.");
 
   const fire = (id) => act((f, treasury, now) => {
     const s = f.staff.find((x) => x.id === id);
@@ -978,8 +1056,9 @@ const Factory = (() => {
           acts.append(sel);
         }
         if (sf.fixed) acts.append(mk("span", "chip robo", "permanent · can't quit"));
+        if (sf.player) acts.append(mk("span", "chip crew", `player · ${(sf.hoursWorked || 0).toLocaleString()} h worked`));
         if (sf.striking) acts.append(mk("span", "chip neg", "on strike: unpaid"));
-        if (sf.skill < 5 && !sf.fixed) {
+        if (sf.skill < 5 && !sf.fixed && !sf.player) {
           const t = mk("button", "btn-ghost", `Train · ${fmtCash(trainCost(sf.skill))}`);
           t.addEventListener("click", () => run(() => train(sf.id)));
           acts.append(t);
@@ -1014,6 +1093,26 @@ const Factory = (() => {
         row.append(info, acts);
         return row;
       }) : [mk("div", "empty", "You've hired everyone in this batch. More are coming.")]));
+  }
+
+  // Job openings for players (Employees panel)
+  function renderOpenings() {
+    const box = g("fOpenings"), card = g("fJobsCard");
+    if (!box) return;
+    const can = iControl();
+    card.classList.toggle("hidden", !can);
+    if (!can) return;
+    const list = st.openings.filter((j) => j.status === "open" || j.status === "taken");
+    box.replaceChildren(...(list.length ? list.map((j) => {
+      const row = mk("div", "f-person");
+      const info = mk("div", "f-person-info");
+      info.append(mk("b", null, `${ROLES[j.role].name} · ${fmtCash(j.wage)}/hour`),
+        mk("span", null, j.status === "open" ? "Waiting for a player to take it" : `${j.playerName} took it: they join at the next save`));
+      const acts = mk("div", "f-person-acts");
+      if (j.status === "open") { const b = mk("button", "btn-ghost", "Withdraw"); b.addEventListener("click", () => run(() => withdrawJob(j.id))); acts.append(b); }
+      row.append(info, acts);
+      return row;
+    }) : [mk("div", "empty", "No openings posted. Players who take one join your staff and are paid from the treasury every hour.")]));
   }
 
   function renderWarehouse() {
@@ -1088,7 +1187,7 @@ const Factory = (() => {
       more);
   }
 
-  function renderAll() { if (typeof Contracts !== "undefined") Contracts.watch(st.ticker); watchDemand(); renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderStaff(); renderRecipes(); }
+  function renderAll() { if (typeof Contracts !== "undefined") Contracts.watch(st.ticker); watchDemand(); renderOpenings(); renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderStaff(); renderRecipes(); }
 
   function watchFactory(ticker) {
     if (factoryUnsub) factoryUnsub();
@@ -1098,6 +1197,13 @@ const Factory = (() => {
       st.factory = s.exists ? s.data() : blank();
       renderAll();
     }, (e) => { if (iControl()) setMsg(errText(e), "err"); }) : null;   // losing control ends access: not an error
+    if (openingsUnsub) openingsUnsub();
+    st.openings = []; st.openingsLoaded = false;
+    openingsUnsub = ticker ? jobsCol().where("company", "==", ticker).limit(100).onSnapshot((q) => {
+      st.openings = q.docs.map((d) => ({ id: d.id, ...d.data() }));
+      st.openingsLoaded = true;
+      renderOpenings();
+    }, () => {}) : null;
     renderAll();
   }
 
@@ -1121,6 +1227,12 @@ const Factory = (() => {
       run(() => buyRaw(g("fRaw").value, qty));
     });
     g("fBuild").addEventListener("click", () => run(buildLine));
+    g("fJobRole").replaceChildren(...["worker", "researcher", "sales", "manager"].map((r) => { const o = mk("option", null, ROLES[r].name); o.value = r; return o; }));
+    g("fJobPost").addEventListener("click", () => {
+      const wage = Math.round(Number(g("fJobWage").value) * 100);
+      if (!(wage >= 100) || wage > 100000) return setMsg("Set a wage between $1 and $1,000 an hour.", "err");
+      run(() => postJob(g("fJobRole").value, wage));
+    });
     g("fCompany").addEventListener("change", (e) => watchFactory(e.target.value));
     g("staffHandle").addEventListener("click", () => setDrawer(true));
     g("staffClose").addEventListener("click", () => setDrawer(false));
@@ -1172,7 +1284,9 @@ const Factory = (() => {
     }
     demandUnsubs.forEach((u) => u());
     demandUnsubs = [];
-    Object.assign(st, { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0, demand: {}, demandKey: "" });
+    if (openingsUnsub) openingsUnsub();
+    openingsUnsub = null;
+    Object.assign(st, { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0, demand: {}, demandKey: "", openings: [], openingsLoaded: false });
     if (g("fMsg")) { setMsg("", ""); renderAll(); }
   }
 
