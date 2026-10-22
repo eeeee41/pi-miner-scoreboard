@@ -1,0 +1,31 @@
+# Runs the ten investor bots (bots/core.js) about once an hour, plus whenever you press
+# "Run workflow" on the Actions tab. Needs the FIREBASE_SERVICE_ACCOUNT repository secret.
+name: Investor bots
+
+on:
+  schedule:
+    - cron: "23 * * * *"    # every hour at :23 (GitHub may start it a few minutes late)
+  workflow_dispatch: {}
+
+concurrency:
+  group: investor-bots
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        run: npm install --prefix bots --no-audit --no-fund
+      - name: Run the bots
+        run: node bots/run.mjs
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}

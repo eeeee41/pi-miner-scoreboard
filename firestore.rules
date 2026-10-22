@@ -315,7 +315,7 @@ service cloud.firestore {
     function takeControl(ticker) {
       let c = request.resource.data;
       return changed().hasOnly(['controller', 'controllerName'])
-        && c.controller != 'market' && validName(c.controllerName)
+        && c.controller != 'market' && !c.controller.matches('bot-.*') && validName(c.controllerName)
         && get(/databases/$(database)/documents/companies/$(ticker)/holders/$(c.controller)).data.shares
            > get(/databases/$(database)/documents/companies/$(ticker)/holders/$(resource.data.controller)).data.shares;
     }

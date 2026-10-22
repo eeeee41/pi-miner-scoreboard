@@ -118,8 +118,9 @@ const Companies = (() => {
 
   // Hand control to the biggest shareholder if they now hold more than the controller.
   async function checkControl(c) {
-    const top = await holdersCol(c.ticker).orderBy("shares", "desc").limit(3).get();
-    const best = top.docs.map((d) => d.data()).find((h) => h.uid !== "market");
+    const top = await holdersCol(c.ticker).orderBy("shares", "desc").limit(13).get();   // room past the market and all ten bots
+    // The market (10-day buyouts) and the investor bots never take control
+    const best = top.docs.map((d) => d.data()).find((h) => h.uid !== "market" && !String(h.uid).startsWith("bot-"));
     if (!best || best.uid === c.controller) return;
     await db.runTransaction(async (tx) => {
       const cur = (await tx.get(companyRef(c.ticker))).data();
