@@ -211,9 +211,10 @@ service cloud.firestore {
             || newLastPrice() || controllerSpends());
       allow delete: if false;
 
-      // The factory: only the controller runs it (warehouse, lines, research, staff, car sales)
+      // The factory: only the controller sees or runs it (warehouse, lines, research, staff, sales)
       match /factory/{doc} {
-        allow read: if signedIn();
+        allow read: if signedIn()
+          && get(/databases/$(database)/documents/companies/$(ticker)).data.controller == request.auth.uid;
         allow create, update: if signedIn() && doc == 'main'
           && get(/databases/$(database)/documents/companies/$(ticker)).data.controller == request.auth.uid
           && request.resource.data.keys().hasOnly(['inventory', 'lines', 'carsSold', 'revenue', 'research', 'project',

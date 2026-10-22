@@ -376,6 +376,7 @@ const Factory = (() => {
     upkeepPaidTo: f.upkeepPaidTo || null, settledAt: f.settledAt || null
   }));
   const company = () => st.companies.find((c) => c.ticker === st.ticker);
+  const myCompanies = () => st.companies.filter((c) => user && c.controller === user.uid);
   const iControl = () => { const c = company(); return !!(c && user && c.controller === user.uid); };
   const fmtDur = (s) => {
     s = Math.max(0, Math.ceil(s));
@@ -658,10 +659,9 @@ const Factory = (() => {
 
   function renderPicker() {
     const sel = g("fCompany");
-    const mine = st.companies.filter((c) => user && c.controller === user.uid);
-    const others = st.companies.filter((c) => !(user && c.controller === user.uid));
-    const opts = [...mine, ...others].map((c) => {
-      const o = mk("option", null, `${c.ticker} · ${c.name}${user && c.controller === user.uid ? " (you run it)" : ""}`);
+    // A factory is private: you only see the ones you run
+    const opts = myCompanies().map((c) => {
+      const o = mk("option", null, `${c.ticker} · ${c.name}`);
       o.value = c.ticker;
       return o;
     });
@@ -673,7 +673,7 @@ const Factory = (() => {
   function renderSummary() {
     const box = g("fSummary");
     const c = company();
-    if (!c) { box.replaceChildren(mk("div", "empty", "No companies yet. Found one on the Stocks tab, then come back to build its factory.")); return; }
+    if (!c) { box.replaceChildren(mk("div", "empty", "You don't run a company yet. Found one on the Stocks tab (or buy enough shares to take control of one), then come back to build its factory. Factories are private: only whoever runs a company can see inside it.")); return; }
     const { f, income } = projected();
     const kpis = mk("div", "kpis four");
     const k = (label, value, sub) => { const d = mk("div", "kpi"); d.append(mk("span", "k", label), mk("b", null, value)); if (sub) d.append(mk("span", "ks", sub)); return d; };
@@ -999,7 +999,7 @@ const Factory = (() => {
     factoryUnsub = ticker ? factoryRef(ticker).onSnapshot((s) => {
       st.factory = s.exists ? s.data() : blank();
       renderAll();
-    }, (e) => setMsg(errText(e), "err")) : null;
+    }, (e) => { if (iControl()) setMsg(errText(e), "err"); }) : null;   // losing control ends access: not an error
     renderAll();
   }
 
@@ -1052,9 +1052,11 @@ const Factory = (() => {
     if (wasOpen && window.matchMedia("(min-width: 1100px)").matches) setTimeout(() => setDrawer(true), 300);
     unsubs.push(db.collection("companies").orderBy("createdAt", "asc").limit(100).onSnapshot((s) => {
       st.companies = s.docs.map((d) => d.data({ serverTimestamps: "estimate" }));
-      if (!st.ticker || !company()) {
-        const mine = st.companies.find((c) => c.controller === u.uid) || st.companies[0];
-        watchFactory(mine ? mine.ticker : null);
+      // Only factories you run can be opened; if you just lost control of this one, switch away
+      if (!st.ticker || !company() || !iControl()) {
+        const mine = myCompanies()[0];
+        if ((mine && mine.ticker) !== st.ticker || !st.ticker) watchFactory(mine ? mine.ticker : null);
+        else renderAll();
       } else renderAll();
     }, (e) => setMsg(errText(e), "err")));
   }
