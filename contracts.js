@@ -24,6 +24,11 @@
      Factory tab open, or the 5-minute upkeep), which collects them.
    • Either side can end an active contract: anything already delivered
      and paid stays, and unused payment goes back to the receiver.
+   • Ongoing contracts have no end: `qty` is the size of the deposit (in
+     units it pays for). The receiver tops the deposit back up from its
+     treasury or warehouse on every save, and the supplier only hands over
+     whole batches the deposit can already pay for, so deliveries pause
+     (never go unpaid) if the receiver runs dry.
    ===================================================================== */
 const Contracts = (() => {
   let db = null, user = null, unsubs = [];
@@ -45,7 +50,8 @@ const Contracts = (() => {
   const companies = () => Factory.companies();
   const me = () => st.ticker;
   const total = (d) => (d.qty / d.every) * d.per;
-  const terms = (d) => `${qtyName(d.item, d.qty)} from ${d.from} to ${d.to} · ${payName(d.pay, d.per)} for every ${qtyName(d.item, d.every)}`;
+  const terms = (d) => `${d.ongoing ? `${Factory.ITEMS[d.item].many}, ongoing,` : qtyName(d.item, d.qty)} from ${d.from} to ${d.to} · ${payName(d.pay, d.per)} for every ${qtyName(d.item, d.every)}`;
+  const where = (d) => (d.pay === "cash" ? "treasury" : "warehouse");
 
   // The factory reads contracts through this when this company's list is already live
   function cached(t) {
@@ -90,12 +96,12 @@ const Contracts = (() => {
         from: weReceive ? p.ticker : t, fromName: weReceive ? p.name : c.name,
         to: weReceive ? t : p.ticker, toName: weReceive ? c.name : p.name,
         proposer: t, item: form.item, qty: form.qty, every: form.every, pay: form.pay, per: form.per,
-        delivered: 0, escrow: 0, waiting: 0, owed: 0, status: "offered"
+        delivered: 0, escrow: 0, waiting: 0, owed: 0, status: "offered", ongoing: !!form.ongoing
       };
       // We're the ones paying: set the whole payment aside now
       if (weReceive) { treasury = takePayment(f, treasury, d.pay, total(d), t); d.escrow = total(d); }
       ctx.created.push(d);
-      return { treasury, msg: `✓ Offered ${p.ticker} a contract: ${terms(d)}.${weReceive ? ` ${payName(d.pay, d.escrow)} is set aside until it's delivered or called off.` : ` ${p.ticker} sets the payment aside when it accepts.`}` };
+      return { treasury, msg: `✓ Offered ${p.ticker} a contract: ${terms(d)}.${weReceive ? ` ${payName(d.pay, d.escrow)} is set aside ${d.ongoing ? "as a deposit" : "until it's delivered or called off"}.` : ` ${p.ticker} sets the payment aside when it accepts.`}` };
     });
   }
 
@@ -135,8 +141,9 @@ const Contracts = (() => {
   });
   const deliverNow = (id) => onContract(id, (d, f, treasury, t) => {
     if (d.status !== "active" || d.from !== t) throw new Error("Only the supplier can deliver on a running contract.");
-    const u = Math.min(f.inventory[d.item] || 0, d.qty - d.delivered);
-    if (u <= 0) throw new Error(`The warehouse has no ${qtyName(d.item, 2).replace(/^2 /, "")} to deliver.`);
+    if (Factory.room(d) <= 0) throw new Error(`${d.to}'s deposit can't pay for any more right now. Deliveries pick up once ${d.to} tops it up.`);
+    const u = Math.min(f.inventory[d.item] || 0, Factory.room(d));
+    if (u <= 0) throw new Error(`The warehouse has no ${Factory.ITEMS[d.item].many} to deliver.`);
     f.inventory[d.item] -= u;
     Factory.deliver(d, u);
     return { msg: `✓ Delivered ${qtyName(d.item, u)} from the warehouse.` };
@@ -149,9 +156,22 @@ const Contracts = (() => {
     const head = mk("div", "c-head");
     head.append(mk("b", null, weSupply ? `We supply ${d.to}` : `${d.from} supplies us`),
       mk("span", "chip" + (d.status === "active" ? " crew" : d.status === "offered" ? " robo" : ""), d.status === "offered" ? (d.proposer === t ? "waiting for them" : "offer for you") : d.status));
-    const info = mk("div", "c-info", `${qtyName(d.item, d.qty)} · ${d.to} pays ${payName(d.pay, d.per)} for every ${qtyName(d.item, d.every)} (${payName(d.pay, total(d))} in all)`);
+    const info = mk("div", "c-info", d.ongoing
+      ? `Ongoing ${Factory.ITEMS[d.item].many} until either side ends it · ${d.to} pays ${payName(d.pay, d.per)} for every ${qtyName(d.item, d.every)} · keeps ${payName(d.pay, total(d))} on deposit (enough for ${qtyName(d.item, d.qty)})`
+      : `${qtyName(d.item, d.qty)} · ${d.to} pays ${payName(d.pay, d.per)} for every ${qtyName(d.item, d.every)} (${payName(d.pay, total(d))} in all)`);
     row.append(head, info);
-    if (d.status !== "offered") {
+    if (d.ongoing && d.status !== "offered") {
+      const bar = mk("div", "progress"); const fill = mk("div"); fill.style.width = Math.min(100, (d.escrow / total(d)) * 100) + "%"; bar.append(fill);
+      const bits = [`${d.delivered.toLocaleString()} delivered so far`, `deposit ${payName(d.pay, d.escrow)} of ${payName(d.pay, total(d))}`];
+      if (d.waiting && d.to === t) bits.push(`${qtyName(d.item, d.waiting)} on the way to our warehouse`);
+      if (d.owed && d.from === t) bits.push(`${payName(d.pay, d.owed)} on the way to us`);
+      row.append(bar, mk("div", "c-info", bits.join(" · ")));
+      if (d.status === "active" && Factory.room(d) <= 0)
+        row.append(mk("div", "c-info neg", d.to === t
+          ? `Paused: our deposit is empty. It refills from our ${where(d)} on the factory's next save.`
+          : `Paused: ${d.to}'s deposit is empty, so nothing more is handed over until ${d.to} has more in its ${where(d)}.`));
+      else if (d.status === "active" && d.to === t) row.append(mk("div", "c-info", `The deposit tops itself up from our ${where(d)} every time the factory saves.`));
+    } else if (d.status !== "offered") {
       const bar = mk("div", "progress"); const fill = mk("div"); fill.style.width = Math.min(100, (d.delivered / d.qty) * 100) + "%"; bar.append(fill);
       const bits = [`${d.delivered.toLocaleString()} of ${d.qty.toLocaleString()} delivered`];
       if (d.escrow) bits.push(`${payName(d.pay, d.escrow)} still set aside`);
@@ -190,6 +210,7 @@ const Contracts = (() => {
     const pay = g("cPay").value;
     const n = (id) => Number(g(id).value);
     return {
+      ongoing: g("cOngoing").checked,
       partner: g("cPartner").value, dir: g("cDir").value, item: g("cItem").value,
       qty: Math.floor(n("cQty")), every: Math.floor(n("cEvery")), pay,
       per: pay === "cash" ? Math.round(n("cPer") * 100) : Math.floor(n("cPer"))
@@ -197,9 +218,9 @@ const Contracts = (() => {
   }
   function check(fm) {
     if (!fm.partner) return "Pick a company.";
-    if (!(fm.qty >= 1) || fm.qty > 1000000) return "Enter how many in total (up to 1,000,000).";
+    if (!(fm.qty >= 1) || fm.qty > 1000000) return fm.ongoing ? "Enter how many units the deposit should cover (up to 1,000,000)." : "Enter how many in total (up to 1,000,000).";
     if (!(fm.every >= 1)) return 'Enter "for every" as a whole number, 1 or more.';
-    if (fm.qty % fm.every) return `The total has to be a multiple of ${fm.every.toLocaleString()}.`;
+    if (fm.qty % fm.every) return `${fm.ongoing ? "The deposit size" : "The total"} has to be a multiple of ${fm.every.toLocaleString()}.`;
     if (!(fm.per >= 1)) return fm.pay === "cash" ? "Enter a price of at least $0.01." : "Enter at least 1 for the payment.";
     if (fm.pay === fm.item) return "Pay with something other than the goods being supplied.";
     return "";
@@ -220,10 +241,15 @@ const Contracts = (() => {
       if (others.some((c) => c.ticker === keep)) sel.value = keep;
     }
     g("cPerLabel").textContent = g("cPay").value === "cash" ? "Pay ($)" : "Pay (units)";
+    g("cQtyLabel").textContent = g("cOngoing").checked ? "Deposit covers (units)" : "How many in total";
     const fm = readForm(), err = check(fm);
     const weReceive = fm.dir === "in";
     const them = fm.partner || "them";
-    g("cSummary").textContent = err ? err
+    const payer = weReceive ? t : them, sup = weReceive ? them : t, rcv = weReceive ? t : them;
+    g("cSummary").textContent = err ? err : fm.ongoing
+      ? `${sup} sends ${rcv} ${Factory.ITEMS[fm.item].many} as it makes them, until either side ends it. ${payer} pays ${payName(fm.pay, fm.per)} for every ${qtyName(fm.item, fm.every)}, ` +
+        `from a deposit of ${payName(fm.pay, total(fm))} (enough for ${qtyName(fm.item, fm.qty)}) that ${weReceive ? `${t} sets aside now` : `${them} sets aside when it accepts`} and that refills itself from ${payer}'s ${fm.pay === "cash" ? "treasury" : "warehouse"}. ` +
+        `If the deposit runs dry, deliveries pause until it's refilled.`
       : `${weReceive ? them : t} sends ${weReceive ? t : them} ${qtyName(fm.item, fm.qty)} as it makes them. ${weReceive ? t : them} pays ${payName(fm.pay, fm.per)} for every ${qtyName(fm.item, fm.every)}: ${payName(fm.pay, total(fm))} in all, ` +
         (weReceive ? `set aside from ${t}'s ${fm.pay === "cash" ? "treasury" : "warehouse"} now.` : `which ${them} sets aside when it accepts.`) +
         (fm.pay === "cash" ? ` Suppliers charge ${fmtCash(Factory.supplierPrice(fm.item))} each; materials are worth about ${fmtCash(Factory.BASE_VALUE[fm.item])}.` : "");
@@ -258,7 +284,7 @@ const Contracts = (() => {
     g("cItem").value = "iron";
     g("cPay").replaceChildren(Object.assign(mk("option", null, "Cash"), { value: "cash" }),
       ...goods.map((k) => { const o = mk("option", null, Factory.ITEMS[k].name); o.value = k; return o; }));
-    for (const id of ["cPartner", "cDir", "cItem", "cQty", "cPay", "cPer", "cEvery"]) {
+    for (const id of ["cPartner", "cDir", "cItem", "cQty", "cPay", "cPer", "cEvery", "cOngoing"]) {
       g(id).addEventListener("input", renderForm);
       g(id).addEventListener("change", renderForm);
     }

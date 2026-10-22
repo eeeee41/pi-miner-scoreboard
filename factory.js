@@ -446,6 +446,13 @@ const Factory = (() => {
   const MAX_CONTRACTS_PER_ACT = 8;    // keeps every save under Firestore's 20 rule lookups
   const OPEN = ["offered", "active"];
   const payDue = (d) => Math.floor(d.delivered / d.every) * d.per;
+  // Units the supplier can hand over now: what's left of a fixed contract, or, for an ongoing one,
+  // only whole batches the deposit can already pay for (so the supplier never delivers unpaid)
+  const room = (d) => (d.ongoing
+    ? Math.max(0, (Math.floor(d.delivered / d.every) + Math.floor(d.escrow / d.per)) * d.every - d.delivered)
+    : d.qty - d.delivered);
+  // Ongoing contracts: the receiver keeps enough set aside for `qty` units, refilled on every save
+  const depositTarget = (d) => (d.qty / d.every) * d.per;
   const needsMe = (d, t) => OPEN.includes(d.status)
     || (d.from === t && d.owed > 0) || (d.to === t && (d.waiting > 0 || d.escrow > 0));
   // Contracts this company should look at on its next save (read outside the transaction: queries can't run inside one)
@@ -466,7 +473,7 @@ const Factory = (() => {
       const d = k.data;
       if (d.from === t) {
         // Freshly made goods go to the buyer first, up to what's left on the contract
-        const left = d.qty - d.delivered;
+        const left = room(d);
         const u = d.status === "active" ? Math.min(made[d.item] || 0, left, f.inventory[d.item] || 0) : 0;
         if (u > 0) {
           f.inventory[d.item] -= u;
@@ -482,6 +489,16 @@ const Factory = (() => {
       }
       if (d.to === t) {
         if (d.waiting > 0) { f.inventory[d.item] = (f.inventory[d.item] || 0) + d.waiting; d.waiting = 0; k.dirty = true; }
+        // Ongoing: top the deposit back up from whatever the treasury or warehouse has
+        if (d.ongoing && d.status === "active" && d.escrow < depositTarget(d)) {
+          const have = d.pay === "cash" ? treasury : f.inventory[d.pay] || 0;
+          const add = Math.min(depositTarget(d) - d.escrow, Math.max(0, have));
+          if (add > 0) {
+            if (d.pay === "cash") treasury -= add; else f.inventory[d.pay] -= add;
+            d.escrow += add;
+            k.dirty = true;
+          }
+        }
         // Over or called off: whatever payment was set aside and not earned comes back
         if (!OPEN.includes(d.status) && d.escrow > 0) {
           if (d.pay === "cash") treasury += d.escrow; else f.inventory[d.pay] = (f.inventory[d.pay] || 0) + d.escrow;
@@ -500,7 +517,7 @@ const Factory = (() => {
     const pay = Math.min(d.escrow, payDue(d) - before);
     d.escrow -= pay;
     d.owed += pay;
-    if (d.delivered >= d.qty) d.status = "done";
+    if (!d.ongoing && d.delivered >= d.qty) d.status = "done";
   }
   const sig = (f) => JSON.stringify({ ...f, settledAt: null,
     lines: f.lines.map(({ busyDone, busyNow, busyHour, ...l }) => l) });
@@ -1167,5 +1184,5 @@ const Factory = (() => {
   // For the contracts panel: run a change through the controller's factory save
   const actFor = (t, change, opts) => act(change, t, opts);
   const companies = () => st.companies;
-  return { init, signIn, signOut, upkeep, actFor, companies, deliver, payDue, MAX_CONTRACTS_PER_ACT, fmtDur, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, PRODUCTS, BASE_VALUE, supplierPrice, clone, blank, qtyName };
+  return { init, signIn, signOut, upkeep, actFor, companies, deliver, payDue, room, MAX_CONTRACTS_PER_ACT, fmtDur, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, PRODUCTS, BASE_VALUE, supplierPrice, clone, blank, qtyName };
 })();

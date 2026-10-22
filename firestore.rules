@@ -351,14 +351,15 @@ service cloud.firestore {
     // The terms never change after the offer; amounts are whole and never negative.
     function contractShape(c) {
       return c.keys().hasOnly(['from', 'fromName', 'to', 'toName', 'proposer', 'item', 'qty', 'every', 'pay', 'per',
-                               'delivered', 'escrow', 'waiting', 'owed', 'status', 'createdAt', 'updatedAt'])
+                               'delivered', 'escrow', 'waiting', 'owed', 'status', 'ongoing', 'createdAt', 'updatedAt'])
+        && (!('ongoing' in c) || c.ongoing is bool)
         && c.from is string && c.to is string && c.from != c.to
         && c.fromName is string && c.fromName.size() <= 40 && c.toName is string && c.toName.size() <= 40
         && isGood(c.item) && (c.pay == 'cash' || (isGood(c.pay) && c.pay != c.item))
         && c.qty is int && c.qty > 0 && c.qty <= 1000000
         && c.every is int && c.every > 0 && c.qty % c.every == 0
         && c.per is int && c.per > 0
-        && isCount(c.delivered) && c.delivered <= c.qty
+        && isCount(c.delivered) && (c.get('ongoing', false) || c.delivered <= c.qty)
         && isCount(c.escrow) && isCount(c.waiting) && isCount(c.owed)
         && c.status in ['offered', 'active', 'done', 'declined', 'withdrawn', 'ended']
         && c.updatedAt is int;
@@ -377,6 +378,7 @@ service cloud.firestore {
         && request.resource.data.proposer == resource.data.proposer
         && request.resource.data.item == resource.data.item && request.resource.data.qty == resource.data.qty
         && request.resource.data.every == resource.data.every
+        && request.resource.data.get('ongoing', false) == resource.data.get('ongoing', false)
         && request.resource.data.pay == resource.data.pay && request.resource.data.per == resource.data.per
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.delivered >= resource.data.delivered;
