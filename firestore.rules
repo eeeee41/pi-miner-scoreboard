@@ -217,7 +217,7 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/companies/$(ticker)).data.controller == request.auth.uid
           && request.resource.data.keys().hasOnly(['inventory', 'lines', 'carsSold', 'revenue', 'research', 'project',
                                                     'staff', 'wagesPaidTo', 'news', 'updatedAt'])
-          && (!('staff' in request.resource.data) || (request.resource.data.staff is list && request.resource.data.staff.size() <= 30))
+          && (!('staff' in request.resource.data) || (request.resource.data.staff is list && request.resource.data.staff.size() <= 40))
           && request.resource.data.inventory is map
           && request.resource.data.lines is list && request.resource.data.lines.size() <= 10
           && isCount(request.resource.data.carsSold) && isCount(request.resource.data.revenue)
@@ -264,7 +264,8 @@ service cloud.firestore {
     function companySettings() {
       let c = request.resource.data;
       return resource.data.controller == request.auth.uid
-        && changed().hasOnly(['dividendPerHour', 'offerPrice', 'offerLeft'])
+        && changed().hasOnly(['dividendPerHour', 'offerPrice', 'offerLeft', 'industry'])
+        && c.industry is string && c.industry.size() > 0 && c.industry.size() <= 40
         && isCount(c.dividendPerHour) && isCount(c.offerPrice)
         && isCount(c.offerLeft) && c.offerLeft <= 10000000;
     }
@@ -324,7 +325,7 @@ service cloud.firestore {
 
     // ---------------- Marketplace (goods) ----------------
     function isGood(item) {
-      return item in ['iron', 'coal', 'sand', 'rubber', 'copper', 'plastic', 'steel', 'glass', 'tire', 'electronics', 'engine'];
+      return item in ['iron', 'coal', 'sand', 'copper', 'oil', 'wheat', 'vegetables', 'cotton', 'rubber', 'plastic', 'cattle', 'steel', 'glass', 'electronics', 'tire', 'engine', 'flour', 'beef'];
     }
     function controls(ticker) {
       return get(/databases/$(database)/documents/companies/$(ticker)).data.controller == request.auth.uid;

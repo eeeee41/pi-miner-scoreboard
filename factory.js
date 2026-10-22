@@ -6,15 +6,19 @@
      lines      [ { id, recipe, queued, startedAt, made } ]
      carsSold, revenue              running totals
 
-   • Raw materials come from game suppliers at fixed prices, paid from the
-     company treasury.
+   • Each company's industry decides what its lines can make: mines dig ore,
+     farms grow crops and raise cattle, energy companies drill oil, food
+     companies turn crops into bread and burgers, and so on. Anything else
+     comes from other companies on the Market, or from game suppliers
+     (raw materials at list price, made goods at a 60% markup).
+   • Wholesalers buy anything in a warehouse at once, for half its value.
    • A production line costs $1,000 (max 10 per company) and makes one
      recipe at a time, working through its queue in real time. Inputs are
      taken from the warehouse when units are queued and handed back if
      the queue is cleared.
-   • Cars never sit in the warehouse: everyday people (game buyers, not
-     players) buy each one for $250 the moment it rolls off the line, and
-     the money goes into the treasury.
+   • Consumer products (cars, phones, bread, gasoline, apps…) never sit in
+     the warehouse: everyday people (game buyers, not players) buy each one
+     the moment it's made, and the money goes into the treasury.
    • No server runs on the free plan, so output is worked out from the
      clock: whenever the controller's page saves anything (or checks in
      every 30 s while the factory is open, and on the 5-minute upkeep),
@@ -27,38 +31,104 @@ const Factory = (() => {
   const MAX_QUEUE = 1000;
   const CAR_PRICE = 25000;       // $250, paid by everyday car buyers
 
+  // Every good in the game. `price` = what game suppliers charge for it (things dug, drilled or grown,
+  // plus plastic). Made goods without a price are sold by suppliers at a 60% markup on their materials.
   const ITEMS = {
+    // dug, drilled or grown
     iron:        { name: "Iron ore",    one: "iron ore",    many: "iron ore",    price: 200 },
     coal:        { name: "Coal",        one: "coal",        many: "coal",        price: 100 },
     sand:        { name: "Sand",        one: "sand",        many: "sand",        price: 50 },
-    rubber:      { name: "Rubber",      one: "rubber",      many: "rubber",      price: 300 },
     copper:      { name: "Copper",      one: "copper",      many: "copper",      price: 400 },
+    oil:         { name: "Crude oil",   one: "barrel of oil", many: "barrels of oil", price: 250 },
+    wheat:       { name: "Wheat",       one: "bushel of wheat", many: "bushels of wheat", price: 80 },
+    vegetables:  { name: "Vegetables",  one: "crate of vegetables", many: "crates of vegetables", price: 60 },
+    cotton:      { name: "Cotton",      one: "bale of cotton", many: "bales of cotton", price: 150 },
+    rubber:      { name: "Rubber",      one: "rubber",      many: "rubber",      price: 300 },
+    // made, kept in the warehouse, traded on the Market
     plastic:     { name: "Plastic",     one: "plastic",     many: "plastic",     price: 150 },
+    cattle:      { name: "Cattle",      one: "head of cattle", many: "head of cattle" },
     steel:       { name: "Steel",       one: "steel",       many: "steel" },
     glass:       { name: "Glass",       one: "glass",       many: "glass" },
-    tire:        { name: "Tires",       one: "tire",        many: "tires" },
     electronics: { name: "Electronics", one: "electronics", many: "electronics" },
+    tire:        { name: "Tires",       one: "tire",        many: "tires" },
     engine:      { name: "Engines",     one: "engine",      many: "engines" },
-    car:         { name: "Cars",        one: "car",         many: "cars" }
+    flour:       { name: "Flour",       one: "sack of flour", many: "sacks of flour" },
+    beef:        { name: "Beef",        one: "pound of beef", many: "pounds of beef" },
+    // sold straight to everyday buyers the moment they're made
+    car:         { name: "Cars",        one: "car",         many: "cars" },
+    gasoline:    { name: "Gasoline",    one: "tank of gasoline", many: "tanks of gasoline" },
+    power:       { name: "Electricity", one: "megawatt-hour", many: "megawatt-hours" },
+    phone:       { name: "Phones",      one: "phone",       many: "phones" },
+    computer:    { name: "Computers",   one: "computer",    many: "computers" },
+    bread:       { name: "Bread",       one: "batch of bread", many: "batches of bread" },
+    canned:      { name: "Canned vegetables", one: "case of canned vegetables", many: "cases of canned vegetables" },
+    burger:      { name: "Burgers",     one: "burger",      many: "burgers" },
+    clothing:    { name: "Clothing",    one: "box of clothing", many: "boxes of clothing" },
+    shoes:       { name: "Shoes",       one: "pair of shoes", many: "pairs of shoes" },
+    toys:        { name: "Toys",        one: "box of toys", many: "boxes of toys" },
+    app:         { name: "Apps",        one: "app",         many: "apps" },
+    cloud:       { name: "Cloud plans", one: "cloud plan",  many: "cloud plans" },
+    account:     { name: "Bank accounts", one: "bank account", many: "bank accounts" },
+    insurance:   { name: "Insurance policies", one: "insurance policy", many: "insurance policies" }
   };
-  const RAW = ["iron", "coal", "sand", "rubber", "copper", "plastic"];
-  // Each recipe makes one unit of the item with the same name
+  const RAW = Object.keys(ITEMS).filter((k) => ITEMS[k].price);
+
+  // What each industry can make. A company's lines only run its own industry's recipes; everything
+  // else it needs comes from other companies on the Market, or from suppliers at their prices.
+  const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance"];
+  const MINES = ["Mining", "Steel and metals"], FARMS = ["Farming", "Food"];
+  // inputs → `yields` units (default 1) every `secs`; `how` = where it comes from when it needs no inputs;
+  // `sellsFor` = everyday buyers take it the moment it's made, for this many cents
   const RECIPES = {
-    steel:       { inputs: { iron: 2, coal: 1 },       secs: 60 },
-    glass:       { inputs: { sand: 2, coal: 1 },       secs: 45 },
-    tire:        { inputs: { rubber: 2, steel: 1 },    secs: 90 },
-    electronics: { inputs: { copper: 2, plastic: 1 },  secs: 120 },
-    engine:      { inputs: { steel: 4, electronics: 2 }, secs: 300 },
-    car:         { inputs: { engine: 1, tire: 4, steel: 6, glass: 2, electronics: 2 }, secs: 600, sellsFor: CAR_PRICE }
+    iron:        { inputs: {}, secs: 20, ind: MINES, how: "mined" },
+    coal:        { inputs: {}, secs: 15, ind: [...MINES, "Energy"], how: "mined" },
+    copper:      { inputs: {}, secs: 30, ind: MINES, how: "mined" },
+    sand:        { inputs: {}, secs: 10, ind: MINES, how: "dug from a quarry" },
+    steel:       { inputs: { iron: 2, coal: 1 },       secs: 60,  ind: ["Steel and metals", "Cars"] },
+    glass:       { inputs: { sand: 2, coal: 1 },       secs: 45,  ind: ["Steel and metals", "Cars", "Electronics"] },
+    oil:         { inputs: {}, secs: 30, ind: ["Energy"], how: "drilled" },
+    plastic:     { inputs: { oil: 1 }, secs: 30, yields: 2, ind: ["Energy"] },
+    gasoline:    { inputs: { oil: 2 }, secs: 60, ind: ["Energy"], sellsFor: 900 },
+    power:       { inputs: { coal: 3 }, secs: 30, ind: ["Energy"], sellsFor: 550 },
+    wheat:       { inputs: {}, secs: 20, yields: 2, ind: FARMS, how: "grown" },
+    vegetables:  { inputs: {}, secs: 15, yields: 2, ind: FARMS, how: "grown" },
+    cotton:      { inputs: {}, secs: 25, ind: ["Farming"], how: "grown" },
+    rubber:      { inputs: {}, secs: 40, ind: ["Farming"], how: "tapped from rubber trees" },
+    cattle:      { inputs: { wheat: 10 }, secs: 300, ind: FARMS },
+    flour:       { inputs: { wheat: 3 }, secs: 30, ind: ["Food"] },
+    beef:        { inputs: { cattle: 1 }, secs: 120, yields: 10, ind: ["Food"] },
+    bread:       { inputs: { flour: 2 }, secs: 60, ind: ["Food"], sellsFor: 900 },
+    canned:      { inputs: { vegetables: 4, steel: 1 }, secs: 90, ind: ["Food"], sellsFor: 1400 },
+    burger:      { inputs: { beef: 1, flour: 1, vegetables: 1 }, secs: 45, ind: ["Food"], sellsFor: 800 },
+    electronics: { inputs: { copper: 2, plastic: 1 },  secs: 120, ind: ["Electronics", "Cars"] },
+    phone:       { inputs: { electronics: 2, glass: 1, plastic: 2 }, secs: 240, ind: ["Electronics"], sellsFor: 4500 },
+    computer:    { inputs: { electronics: 4, steel: 2, plastic: 4, glass: 1 }, secs: 480, ind: ["Electronics"], sellsFor: 10000 },
+    tire:        { inputs: { rubber: 2, steel: 1 },    secs: 90,  ind: ["Cars"] },
+    engine:      { inputs: { steel: 4, electronics: 2 }, secs: 300, ind: ["Cars"] },
+    car:         { inputs: { engine: 1, tire: 4, steel: 6, glass: 2, electronics: 2 }, secs: 600, ind: ["Cars"], sellsFor: CAR_PRICE },
+    clothing:    { inputs: { cotton: 3 }, secs: 90, ind: ["Retail"], sellsFor: 1000 },
+    shoes:       { inputs: { rubber: 1, cotton: 1, plastic: 1 }, secs: 60, ind: ["Retail"], sellsFor: 1000 },
+    toys:        { inputs: { plastic: 3 }, secs: 45, ind: ["Retail"], sellsFor: 700 },
+    app:         { inputs: {}, secs: 300, ind: ["Software"], how: "written by your team", sellsFor: 1500 },
+    cloud:       { inputs: { electronics: 2 }, secs: 600, ind: ["Software"], sellsFor: 5000 },
+    account:     { inputs: {}, secs: 300, ind: ["Finance"], how: "opened for customers", sellsFor: 1200 },
+    insurance:   { inputs: {}, secs: 600, ind: ["Finance"], how: "written for customers", sellsFor: 2500 }
   };
+  const recipesFor = (industry) => Object.keys(RECIPES).filter((k) => RECIPES[k].ind.includes(industry));
+  const canMake = (industry, k) => RECIPES[k].ind.includes(industry);
+  const extracts = (k) => !Object.keys(RECIPES[k].inputs).length && !RECIPES[k].sellsFor;   // dug, drilled or grown
+  // Goods that sit in a warehouse and trade on the Market (everything not sold straight to everyday buyers)
+  const GOODS = Object.keys(ITEMS).filter((k) => !(RECIPES[k] && RECIPES[k].sellsFor));
+  const SUPPLIER_MARKUP = 1.6, WHOLESALE = 0.5;
 
   // Research: real-time projects paid from the treasury, one at a time per company
   const RESEARCH = {
     robots1: { name: "Robot arms",              cost: 200000,  hours: 0.5, needs: null,      does: "Lets you fit robot arms to production lines: 1.5× faster" },
     robots2: { name: "Assembly robots",         cost: 800000,  hours: 2,   needs: "robots1", does: "Lets you fit assembly robots: 2.5× faster" },
-    robots3: { name: "Automated car lines",     cost: 2000000, hours: 6,   needs: "robots2", does: "Lets you fully automate a line: 4× faster" },
+    robots3: { name: "Fully automated lines",    cost: 2000000, hours: 6,   needs: "robots2", does: "Lets you fully automate a line: 4× faster" },
     alloy1:  { name: "Cheaper alloys",          cost: 300000,  hours: 1,   needs: null,      does: "Steel needs 1 iron ore instead of 2" },
     alloy2:  { name: "Lightweight alloys",      cost: 1000000, hours: 3,   needs: "alloy1",  does: "Cars need 4 steel instead of 6" },
+    harvest: { name: "Heavy machinery and better seeds", cost: 400000, hours: 1, needs: null, does: "Everything your lines mine, drill or grow comes out 2 at a time" },
     labs:    { name: "Better research methods", cost: 500000,  hours: 1,   needs: null,      does: "All research after this finishes twice as fast" }
   };
   // Robot tiers a line can be upgraded to (each needs its research first)
@@ -71,8 +141,13 @@ const Factory = (() => {
   // What an item's materials cost at supplier prices (used to price never-sold items)
   const BASE_VALUE = {};
   const valueOf = (k) => BASE_VALUE[k] ?? (BASE_VALUE[k] = ITEMS[k].price ||
-    Object.entries(RECIPES[k].inputs).reduce((a, [i, n]) => a + n * valueOf(i), 0));
+    Math.round(Object.entries(RECIPES[k].inputs).reduce((a, [i, n]) => a + n * valueOf(i), 0) / (RECIPES[k].yields || 1)));
   Object.keys(ITEMS).forEach(valueOf);
+  // What game suppliers charge per unit, and what wholesalers pay for anything in a warehouse
+  const supplierPrice = (k) => ITEMS[k].price || Math.round(BASE_VALUE[k] * SUPPLIER_MARKUP);
+  const wholesalePrice = (k) => Math.max(1, Math.floor(BASE_VALUE[k] * WHOLESALE));
+  // Units a line turns out per run, after research (MissingNo.'s multiplier is separate)
+  const yieldOf = (k, research = {}) => (RECIPES[k].yields || 1) * (research.harvest && extracts(k) ? 2 : 1);
 
   // Recipe inputs after research
   function inputsFor(recipe, research = {}) {
@@ -83,19 +158,19 @@ const Factory = (() => {
   }
   // Employees: hired from an hourly pool, paid hourly from the treasury
   const HOUR = 3600000;
-  const MAX_STAFF = 30;
+  const MAX_STAFF = 40;
   const MAX_WORKERS_PER_LINE = 3;
   const ROLES = {
     worker:     { name: "Worker",      base: 800,  does: (s) => `+${10 * s}% speed on their line` },
     researcher: { name: "Researcher",  base: 2000, does: (s) => `+${10 * s}% research speed` },
-    sales:      { name: "Salesperson", base: 1200, does: (s) => `+${2 * s}% on every car's price` },
+    sales:      { name: "Salesperson", base: 1200, does: (s) => `+${2 * s}% on everything sold to everyday buyers` },
     manager:    { name: "Manager",     base: 3000, does: (s) => `boosts every other employee by ${5 * s}%` },
-    glitch:     { name: "Glitch",      base: 0,    does: (s) => `works every job at once: line speed, research, car prices and managing (skill ${s}), and his line makes 5× as much` }
+    glitch:     { name: "Glitch",      base: 0,    does: (s) => `works every job at once: line speed, research, sales and managing (skill ${s}), and his line makes 5× as much` }
   };
   // Hard-coded staff: always on the payroll of these companies, for free, and can't be let go or trained
   const FIXED_STAFF = {
-    // Six MissingNo.s: the original plus #2–#6
-    TSLA: ["", 2, 3, 4, 5, 6].map((n) => ({
+    // Eighteen MissingNo.s: the original plus #2–#18
+    TSLA: ["", ...Array.from({ length: 17 }, (_, i) => i + 2)].map((n) => ({
       id: n ? `missingno${n}` : "missingno", name: n ? `MissingNo. #${n}` : "MissingNo.",
       role: "glitch", skill: 5, wage: 0, line: null, fixed: true, outputMult: 5
     }))
@@ -141,7 +216,9 @@ const Factory = (() => {
     ROBOTS[line.robots || 0].mult * (1 + workersOn(f, line).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f));
   const unitMs = (line, f) => (RECIPES[line.recipe].secs * 1000) / lineMult(line, f);
   const researchSpeed = (f) => 1 + staffOf(f).filter((s) => is(s, "researcher")).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f);
-  const carPrice = (f) => Math.round(CAR_PRICE * (1 + Math.min(0.5, staffOf(f).filter((s) => is(s, "sales")).reduce((a, s) => a + 0.02 * s.skill, 0) * managerBoost(f))));
+  // Salespeople raise what everyday buyers pay (up to +50%)
+  const salesBonus = (f) => Math.min(0.5, staffOf(f).filter((s) => is(s, "sales")).reduce((a, s) => a + 0.02 * s.skill, 0) * managerBoost(f));
+  const salePrice = (f, k) => Math.round(RECIPES[k].sellsFor * (1 + salesBonus(f)));
   const payrollPerHour = (f) => staffOf(f).reduce((a, s) => a + s.wage, 0);
 
   // Change something that affects speed without losing progress: every running unit and the
@@ -211,10 +288,13 @@ const Factory = (() => {
     if (s < 3600) return `${Math.floor(s / 60)} min ${s % 60 ? `${s % 60} s` : ""}`.trim();
     return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
   };
+  const aAn = (w) => (/^[aeiou]/i.test(w) ? "an" : "a");
   const qtyName = (k, n) => `${n.toLocaleString()} ${n === 1 ? ITEMS[k].one : ITEMS[k].many}`;
-  const inputsText = (r, research) => Object.entries(inputsFor(r, research)).map(([k, n]) => qtyName(k, n)).join(" + ");
+  const inputsText = (r, research) => Object.entries(inputsFor(r, research)).map(([k, n]) => qtyName(k, n)).join(" + ") || `nothing (${RECIPES[r].how})`;
+  // "→ 2 bushels of wheat · sold instantly for $9.00"
+  const outText = (k, n) => n === 1 ? `1 ${ITEMS[k].one}` : qtyName(k, n);
 
-  // Count every unit finished by `now`. Cars are sold on the spot; returns the Cash they brought in.
+  // Count every unit finished by `now`. Things everyday buyers want are sold on the spot; returns the Cash they brought in.
   function settle(f, now) {
     let income = 0;
     if (f.project && now >= f.project.endsAt) {          // finished research
@@ -226,12 +306,12 @@ const Factory = (() => {
       const per = unitMs(line, f);
       const n = Math.min(line.queued, Math.floor((now - line.startedAt) / per));
       if (n <= 0) continue;
-      const out = n * outMult(line, f);                 // units that actually come off the line
+      const out = n * yieldOf(line.recipe, f.research) * outMult(line, f);   // units that actually come off the line
       line.queued -= n;
       line.made = (line.made || 0) + out;
       line.startedAt = line.queued ? line.startedAt + n * per : null;
       if (RECIPES[line.recipe].sellsFor) {
-        const cash = out * carPrice(f);
+        const cash = out * salePrice(f, line.recipe);
         f.carsSold += out;
         f.revenue += cash;
         income += cash;
@@ -255,7 +335,7 @@ const Factory = (() => {
       let treasury = c.treasury + settle(f, now);
       treasury = payroll(f, now, treasury);
       if (!change && JSON.stringify(f) === before && treasury === c.treasury) return "";   // nothing to save
-      const res = change ? change(f, treasury, now) || {} : {};
+      const res = change ? change(f, treasury, now, c) || {} : {};
       if (res.treasury != null) treasury = res.treasury;
       if (treasury < 0) throw new Error(`The treasury only has ${fmtCash(c.treasury)}.`);
       tx.set(factoryRef(t), { ...f, updatedAt: fb.firestore.FieldValue.serverTimestamp() });
@@ -265,28 +345,42 @@ const Factory = (() => {
   }
 
   const buyRaw = (item, qty) => act((f, treasury) => {
-    const cost = ITEMS[item].price * qty;
+    if (!GOODS.includes(item)) throw new Error("Suppliers don't sell that.");
+    const cost = supplierPrice(item) * qty;
     if (cost > treasury) throw new Error(`${qtyName(item, qty)} costs ${fmtCash(cost)}; the treasury has ${fmtCash(treasury)}.`);
     f.inventory[item] = (f.inventory[item] || 0) + qty;
     return { treasury: treasury - cost, msg: `✓ Bought ${qtyName(item, qty)} for ${fmtCash(cost)}.` };
   });
 
-  const buildLine = () => act((f, treasury) => {
+  // Sell straight from the warehouse to game wholesalers, for half the materials value
+  const sellWholesale = (item, qty) => act((f, treasury) => {
+    if (!GOODS.includes(item)) throw new Error("Wholesalers don't buy that.");
+    if ((f.inventory[item] || 0) < qty) throw new Error(`The warehouse only has ${qtyName(item, f.inventory[item] || 0)}.`);
+    const cash = wholesalePrice(item) * qty;
+    f.inventory[item] -= qty;
+    f.revenue += cash;
+    return { treasury: treasury + cash, msg: `✓ Sold ${qtyName(item, qty)} to wholesalers for ${fmtCash(cash)}.` };
+  });
+
+  const buildLine = () => act((f, treasury, now, c) => {
     if (f.lines.length >= MAX_LINES) throw new Error(`A company can have at most ${MAX_LINES} production lines.`);
     if (treasury < LINE_COST) throw new Error(`A line costs ${fmtCash(LINE_COST)}; the treasury has ${fmtCash(treasury)}.`);
-    f.lines.push({ id: Date.now().toString(36), recipe: "steel", queued: 0, startedAt: null, made: 0 });
+    f.lines.push({ id: Date.now().toString(36), recipe: recipesFor(c.industry)[0] || "steel", queued: 0, startedAt: null, made: 0 });
     return { treasury: treasury - LINE_COST, msg: `✓ Built line ${f.lines.length}.` };
   });
 
-  const setRecipe = (i, recipe) => act((f) => {
+  const cantMake = (c, k) => new Error(`${c.industry} companies can't make ${ITEMS[k].many}. Buy them on the Market from a company that can, or switch this company's industry on the Stocks tab.`);
+  const setRecipe = (i, recipe) => act((f, treasury, now, c) => {
     const line = f.lines[i];
     if (line.queued) throw new Error("Clear this line's queue before switching what it makes.");
+    if (!canMake(c.industry, recipe)) throw cantMake(c, recipe);
     line.recipe = recipe;
     return { msg: `✓ Line ${i + 1} now makes ${ITEMS[recipe].many}.` };
   });
 
-  const queue = (i, n) => act((f, treasury, now) => {
+  const queue = (i, n) => act((f, treasury, now, c) => {
     const line = f.lines[i];
+    if (!canMake(c.industry, line.recipe)) throw cantMake(c, line.recipe);
     if (line.queued + n > MAX_QUEUE) throw new Error(`A line's queue holds at most ${MAX_QUEUE.toLocaleString()} units.`);
     // A queue keeps the inputs it started with, so a refund always matches what was taken
     if (!line.queued || !line.inputs) line.inputs = inputsFor(line.recipe, f.research);
@@ -297,7 +391,8 @@ const Factory = (() => {
     for (const [k, q] of Object.entries(r.inputs)) f.inventory[k] -= q * n;
     if (!line.queued) line.startedAt = now;
     line.queued += n;
-    return { msg: `✓ Queued ${qtyName(line.recipe, n)} on line ${i + 1}.` };
+    const y = yieldOf(line.recipe, f.research) * outMult(line, f);
+    return { msg: y > 1 ? `✓ Queued ${n.toLocaleString()} run${n === 1 ? "" : "s"} on line ${i + 1}: ${qtyName(line.recipe, n * y)}.` : `✓ Queued ${qtyName(line.recipe, n)} on line ${i + 1}.` };
   });
 
   const clearQueue = (i) => act((f) => {
@@ -437,21 +532,26 @@ const Factory = (() => {
     const kpis = mk("div", "kpis four");
     const k = (label, value, sub) => { const d = mk("div", "kpi"); d.append(mk("span", "k", label), mk("b", null, value)); if (sub) d.append(mk("span", "ks", sub)); return d; };
     kpis.append(
-      k("Treasury", fmtCash(c.treasury + income), income ? `includes ${fmtCash(income)} from cars just sold` : "pays for materials and lines"),
+      k("Treasury", fmtCash(c.treasury + income), income ? `includes ${fmtCash(income)} from sales just made` : "pays for materials and lines"),
       k("Production lines", `${f.lines.length} / ${MAX_LINES}`, `${f.lines.filter((l) => l.queued).length} running`),
-      k("Cars sold", f.carsSold.toLocaleString(), `to everyday buyers at ${fmtCash(carPrice(f))} each`),
-      k("Car revenue", fmtCash(f.revenue), "all-time, into the treasury")
+      k("Sold to everyday buyers", f.carsSold.toLocaleString(), salesBonus(f) ? `at +${Math.round(salesBonus(f) * 100)}% thanks to your salespeople` : "the moment they're made"),
+      k("Sales revenue", fmtCash(f.revenue), "all-time, into the treasury")
     );
+    const mine = recipesFor(c.industry);
+    const ind = mk("p", "co-note", mine.length
+      ? `${c.ticker} is ${aAn(c.industry)} ${c.industry.toLowerCase()} company. Its lines can make ${mine.map((k) => ITEMS[k].name.toLowerCase()).join(", ")}.`
+      : `${c.ticker}'s industry (${c.industry}) has nothing to make yet.`);
     const who = mk("p", "co-note", iControl()
       ? "You control this company, so you run its factory."
       : `Only ${c.controllerName}, who controls ${c.ticker}, can run this factory. You can look around.`);
-    box.replaceChildren(kpis, who);
+    box.replaceChildren(kpis, ind, who);
   }
 
   function renderLines() {
     const box = g("fLines");
     const { f } = projected();
-    const can = iControl();
+    const can = iControl(), c = company();
+    const allowed = c ? recipesFor(c.industry) : [];
     g("fBuild").classList.toggle("hidden", !can || f.lines.length >= MAX_LINES);
     g("fBuild").textContent = `Build a production line (${fmtCash(LINE_COST)})`;
     if (!f.lines.length) {
@@ -468,7 +568,8 @@ const Factory = (() => {
         what = mk("select", "f-recipe");
         what.id = `fRecipe${i}`;
         what.setAttribute("aria-label", `What line ${i + 1} makes`);
-        for (const key of Object.keys(RECIPES)) { const o = mk("option", null, ITEMS[key].name); o.value = key; what.append(o); }
+        const keys = allowed.includes(line.recipe) ? allowed : [line.recipe, ...allowed];
+        for (const key of keys) { const o = mk("option", null, ITEMS[key].name + (allowed.includes(key) ? "" : " (not this industry)")); o.value = key; what.append(o); }
         what.value = line.recipe;
         what.addEventListener("change", (e) => run(() => setRecipe(i, e.target.value)));
       } else {
@@ -485,7 +586,9 @@ const Factory = (() => {
       const inputs = line.queued && line.inputs
         ? Object.entries(line.inputs).map(([k, n]) => qtyName(k, n)).join(" + ")
         : inputsText(line.recipe, f.research);
-      const recipe = mk("div", "f-recipe-text", `${inputs} → ${om > 1 ? `${om} ${ITEMS[line.recipe].many}` : `1 ${ITEMS[line.recipe].one}`} · ${fmtDur(unitMs(line, f) / 1000)} each${r.sellsFor ? ` · sold instantly for ${fmtCash(carPrice(f))}` : ""}`);
+      const per = yieldOf(line.recipe, f.research) * om;
+      const recipe = mk("div", "f-recipe-text", `${inputs || `nothing (${r.how})`} → ${outText(line.recipe, per)} · ${fmtDur(unitMs(line, f) / 1000)} each run${r.sellsFor ? ` · sold instantly for ${fmtCash(salePrice(f, line.recipe))} each` : ""}`);
+      if (c && !allowed.includes(line.recipe)) recipe.append(mk("span", "neg", ` · ${c.industry} companies can't make this any more: let the queue finish, then switch the line`));
       const bar = mk("div", "progress"); const fill = mk("div"); fill.dataset.line = i; bar.append(fill);
       const status = mk("div", "f-status"); status.dataset.line = i;
       card.append(head, recipe, bar, status);
@@ -656,39 +759,70 @@ const Factory = (() => {
   function renderWarehouse() {
     const box = g("fInv");
     const { f } = projected();
-    const rows = Object.keys(ITEMS).filter((k) => k !== "car");
-    box.replaceChildren(...rows.map((k) => {
+    // What's in stock, plus whatever this company's recipes use or make
+    const c = company(), used = new Set();
+    for (const k of c ? recipesFor(c.industry) : []) { used.add(k); Object.keys(RECIPES[k].inputs).forEach((i) => used.add(i)); }
+    const rows = GOODS.filter((k) => (f.inventory[k] || 0) > 0 || used.has(k));
+    if (!rows.length) { box.replaceChildren(mk("div", "empty", "Empty.")); }
+    else box.replaceChildren(...rows.map((k) => {
       const d = mk("div", "f-item" + ((f.inventory[k] || 0) ? "" : " none"));
       d.append(mk("span", null, ITEMS[k].name), mk("b", null, (f.inventory[k] || 0).toLocaleString()));
       return d;
     }));
     g("fBuyBox").classList.toggle("hidden", !iControl());
+    g("fSellBox").classList.toggle("hidden", !iControl());
+    // Only what's actually in the warehouse can go to wholesalers
+    const sel = g("fSell"), keep = sel.value;
+    const stock = GOODS.filter((k) => (f.inventory[k] || 0) > 0);
+    const key = stock.map((k) => `${k}:${f.inventory[k]}`).join("|");
+    if (sel.dataset.key !== key) {
+      sel.replaceChildren(...(stock.length ? stock.map((k) => { const o = mk("option", null, `${ITEMS[k].name} (${(f.inventory[k]).toLocaleString()} in stock, ${fmtCash(wholesalePrice(k))} each)`); o.value = k; return o; })
+        : [Object.assign(mk("option", null, "Nothing in the warehouse"), { value: "" })]));
+      sel.dataset.key = key;
+      if (stock.includes(keep)) sel.value = keep;
+    }
     renderCost();
   }
 
   function renderCost() {
     const item = g("fRaw").value, qty = Math.floor(Number(g("fRawQty").value));
-    g("fRawCost").textContent = qty > 0 ? `Costs ${fmtCash(ITEMS[item].price * qty)} from the treasury` : "";
+    g("fRawCost").textContent = qty > 0 && item ? `Costs ${fmtCash(supplierPrice(item) * qty)} from the treasury` : "";
+    const sItem = g("fSell").value, sQty = Math.floor(Number(g("fSellQty").value));
+    g("fSellCash").textContent = sItem && sQty > 0
+      ? `Pays ${fmtCash(wholesalePrice(sItem) * sQty)} into the treasury right away: half what the materials are worth. The Market usually pays more.`
+      : "Wholesalers buy anything in your warehouse right away, for half what its materials are worth.";
   }
 
   function renderRecipes() {
-    const research = st.factory ? projected().f.research : {};
-    const rows = Object.keys(RECIPES).map((k) => {
+    const pf = st.factory ? projected().f : blank();
+    const c = company();
+    const keys = c ? recipesFor(c.industry) : [];
+    const rows = keys.map((k) => {
       const r = RECIPES[k];
+      const y = yieldOf(k, pf.research);
       const tr = mk("tr");
-      tr.append(mk("td", null, ITEMS[k].name), mk("td", null, inputsText(k, research)), mk("td", "num", fmtDur(r.secs)),
-        mk("td", null, r.sellsFor ? `Sold instantly to everyday buyers for ${fmtCash(st.factory ? carPrice(projected().f) : r.sellsFor)}` : "Kept in the warehouse"));
+      tr.append(mk("td", null, ITEMS[k].name), mk("td", null, `${inputsText(k, pf.research)} → ${outText(k, y)}`), mk("td", "num", fmtDur(r.secs)),
+        mk("td", null, r.sellsFor ? `Sold instantly to everyday buyers for ${fmtCash(salePrice(pf, k))} each` : `Kept in the warehouse · worth about ${fmtCash(BASE_VALUE[k])} each`));
       return tr;
     });
-    const raw = RAW.map((k) => `${ITEMS[k].name} ${fmtCash(ITEMS[k].price)}`).join(" · ");
     const table = mk("table", "f-table");
     const head = mk("tr");
-    for (const h of ["Makes", "From", "Time each", "Then"]) head.append(mk("th", null, h));
+    for (const h of ["Makes", "From", "Time per run", "Then"]) head.append(mk("th", null, h));
     const thead = mk("thead"); thead.append(head);
     const tbody = mk("tbody"); tbody.append(...rows);
     table.append(thead, tbody);
     const wrap = mk("div", "f-table-wrap"); wrap.append(table);
-    g("fRecipes").replaceChildren(wrap, mk("p", "co-note", `Raw materials from suppliers: ${raw}. A car's materials cost about $136, so each car earns about $114. Times are for a line without robots; this company's research is already counted in the recipes.`));
+    const others = INDUSTRIES.filter((i) => !c || i !== c.industry).map((i) => {
+      const p = mk("p", "co-note");
+      p.append(mk("b", null, `${i}: `), recipesFor(i).map((k) => ITEMS[k].name.toLowerCase()).join(", "));
+      return p;
+    });
+    const more = mk("details", "f-others");
+    more.append(mk("summary", null, "What other industries make"), ...others);
+    g("fRecipes").replaceChildren(
+      ...(c ? [mk("p", "co-note", `As ${aAn(c.industry)} ${c.industry.toLowerCase()} company, ${c.ticker} can make:`), wrap] : [mk("div", "empty", "Pick a company to see what it can make.")]),
+      mk("p", "co-note", "Anything a recipe needs that you don't make yourself comes from other companies on the Market, or from suppliers: raw materials at their list price, made goods at a 60% markup. Times are for a line without robots or workers; this company's research is already counted."),
+      more);
   }
 
   function renderAll() { renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderStaff(); renderRecipes(); }
@@ -707,8 +841,16 @@ const Factory = (() => {
   /* ---------- lifecycle ---------- */
   function init(firebaseNs, firestore) {
     fb = firebaseNs; db = firestore;
-    g("fRaw").replaceChildren(...RAW.map((k) => { const o = mk("option", null, `${ITEMS[k].name} (${fmtCash(ITEMS[k].price)} each)`); o.value = k; return o; }));
+    g("fRaw").replaceChildren(...GOODS.map((k) => { const o = mk("option", null, `${ITEMS[k].name} (${fmtCash(supplierPrice(k))} each${ITEMS[k].price ? "" : ", made"})`); o.value = k; return o; }));
     g("fRaw").addEventListener("change", renderCost);
+    g("fSell").addEventListener("change", renderCost);
+    g("fSellQty").addEventListener("input", renderCost);
+    g("fSellBtn").addEventListener("click", () => {
+      const item = g("fSell").value, qty = Math.floor(Number(g("fSellQty").value));
+      if (!item) return setMsg("The warehouse is empty.", "err");
+      if (!(qty >= 1)) return setMsg("Enter how many to sell.", "err");
+      run(() => sellWholesale(item, qty));
+    });
     g("fRawQty").addEventListener("input", renderCost);
     g("fBuy").addEventListener("click", () => {
       const qty = Math.floor(Number(g("fRawQty").value));
@@ -775,5 +917,5 @@ const Factory = (() => {
     }
   }
 
-  return { init, signIn, signOut, upkeep, RECIPES, ITEMS, RAW, BASE_VALUE, clone, blank, qtyName };
+  return { init, signIn, signOut, upkeep, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, BASE_VALUE, supplierPrice, clone, blank, qtyName };
 })();

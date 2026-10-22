@@ -25,7 +25,8 @@ const Companies = (() => {
   const HOUR = 3600000;
   const MAX_CATCHUP_HOURS = 168;     // a payout covers at most a week of missed hours
   const MAX_PAYEES = 200;            // shareholders paid per payout (Firestore: 500 writes per transaction)
-  const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Energy", "Food", "Software", "Finance", "Retail"];
+  // Same list as Factory.INDUSTRIES: the industry decides what the company's lines can make
+  const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance"];
 
   let fb = null, db = null, user = null;
   let unsubs = [], detailUnsubs = [], holderUnsubs = new Map();
@@ -110,8 +111,8 @@ const Companies = (() => {
     });
   }
 
-  async function saveSettings(ticker, { dividendPerHour, offerPrice, offerLeft }) {
-    await companyRef(ticker).update({ dividendPerHour, offerPrice, offerLeft });
+  async function saveSettings(ticker, { dividendPerHour, offerPrice, offerLeft, industry }) {
+    await companyRef(ticker).update({ dividendPerHour, offerPrice, offerLeft, industry });
   }
 
   // Hand control to the biggest shareholder if they now hold more than the controller.
@@ -290,7 +291,12 @@ const Companies = (() => {
       const sec = mk("div", "co-sec ctl");
       sec.append(mk("h3", null, "You control this company"));
       const r1 = mk("div", "co-form");
-      r1.append(field("sDiv", "Dividend per hour, total ($)", { type: "number", min: 0, step: 0.01, value: (c.dividendPerHour / 100).toFixed(2) }));
+      const indL = mk("label", "field"); indL.htmlFor = "sSetIndustry";
+      const indSel = mk("select"); indSel.id = "sSetIndustry";
+      indSel.replaceChildren(...[...new Set([...INDUSTRIES, c.industry])].map((i) => { const o = mk("option", null, i); o.value = i; return o; }));
+      indSel.value = c.industry;
+      indL.append(mk("span", null, "Industry (what its factory makes)"), indSel);
+      r1.append(field("sDiv", "Dividend per hour, total ($)", { type: "number", min: 0, step: 0.01, value: (c.dividendPerHour / 100).toFixed(2) }), indL);
       const r2 = mk("div", "co-form");
       r2.append(
         field("sOfferPrice", "Offer new shares at ($ each)", { type: "number", min: 0, step: 0.01, value: (c.offerPrice / 100).toFixed(2) }),
@@ -303,11 +309,11 @@ const Companies = (() => {
         if (!(dividendPerHour >= 0) || !(offerPrice >= 0) || !(offerLeft >= 0)) throw new Error("Use zero or more for every box.");
         if (offerLeft > 0 && !offerPrice) throw new Error("Set a price for the new shares.");
         if (offerLeft > 10000000) throw new Error("Offer at most 10,000,000 new shares at a time.");
-        await saveSettings(c.ticker, { dividendPerHour, offerPrice, offerLeft });
+        await saveSettings(c.ticker, { dividendPerHour, offerPrice, offerLeft, industry: g("sSetIndustry").value });
         return "✓ Saved.";
       }, "sCtlMsg");
       const cmsg = mk("div", "status"); cmsg.id = "sCtlMsg";
-      sec.append(r1, r2, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice."), save, cmsg);
+      sec.append(r1, r2, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes."), save, cmsg);
       sections.push(sec);
     }
 

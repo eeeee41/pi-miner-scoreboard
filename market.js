@@ -38,7 +38,7 @@ const Market = (() => {
   const fmtCash = (c) => Economy.fmtCash(c);
   const errText = (e) => Economy.errText(e);
   const ITEMS = () => Factory.ITEMS;
-  const goods = () => Object.keys(Factory.ITEMS).filter((k) => k !== "car");
+  const goods = () => Factory.GOODS;     // everything that sits in a warehouse (not sold straight to everyday buyers)
   const qtyName = (k, n) => Factory.qtyName(k, n);
   const ms = (t) => (t && t.toMillis ? t.toMillis() : typeof t === "number" ? t : Date.now());
   const now = () => fb.firestore.FieldValue.serverTimestamp();
@@ -195,8 +195,8 @@ const Market = (() => {
     const item = st.item;
     const avg = avgOf(st.sales);
     g("mPrice").textContent = avg != null
-      ? `Recent average: ${fmtCash(Math.round(avg))} each over the last ${st.sales.length} sale${st.sales.length === 1 ? "" : "s"} · materials cost ${fmtCash(Factory.BASE_VALUE[item])}`
-      : `No sales yet · materials cost ${fmtCash(Factory.BASE_VALUE[item])}${Factory.RAW.includes(item) ? " from suppliers" : ""}`;
+      ? `Recent average: ${fmtCash(Math.round(avg))} each over the last ${st.sales.length} sale${st.sales.length === 1 ? "" : "s"} · worth about ${fmtCash(Factory.BASE_VALUE[item])} · suppliers charge ${fmtCash(Factory.supplierPrice(item))}`
+      : `No sales yet · worth about ${fmtCash(Factory.BASE_VALUE[item])} · suppliers charge ${fmtCash(Factory.supplierPrice(item))}`;
     const box = g("mListings");
     if (!st.listings.length) { box.replaceChildren(mk("div", "empty", `No one is selling ${ITEMS()[item].many} right now.`)); return; }
     const canBuy = !!company();

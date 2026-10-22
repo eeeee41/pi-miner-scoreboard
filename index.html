@@ -279,6 +279,9 @@
   .f-item.none { color: var(--muted); }
   .f-buy { margin-top: 10px; width: 100%; padding: 10px; }
   .f-table-wrap { overflow-x: auto; }
+  .f-others { margin-top: 10px; }
+  .f-others summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; }
+  .f-others p { margin: 6px 0; }
   .f-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .f-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); }
   .f-table td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -591,13 +594,22 @@
           <h2>Warehouse</h2>
           <div id="fInv" class="f-inv"></div>
           <div class="co-sec" id="fBuyBox">
-            <h3>Buy raw materials</h3>
+            <h3>Buy from suppliers</h3>
             <div class="co-form">
               <label class="field" for="fRaw"><span>Material</span><select id="fRaw"></select></label>
               <label class="field" for="fRawQty"><span>How many</span><input id="fRawQty" type="number" min="1" step="1" value="100" /></label>
             </div>
             <p class="co-note" id="fRawCost"></p>
             <button class="btn-ghost f-buy" id="fBuy">Buy from suppliers</button>
+          </div>
+          <div class="co-sec" id="fSellBox">
+            <h3>Sell to wholesalers</h3>
+            <div class="co-form">
+              <label class="field" for="fSell"><span>From the warehouse</span><select id="fSell"></select></label>
+              <label class="field" for="fSellQty"><span>How many</span><input id="fSellQty" type="number" min="1" step="1" value="100" /></label>
+            </div>
+            <p class="co-note" id="fSellCash"></p>
+            <button class="btn-ghost f-buy" id="fSellBtn">Sell now</button>
           </div>
         </div>
       </div>
@@ -607,7 +619,7 @@
         <div id="fResearch"></div>
       </div>
       <div class="card" style="margin-top: 16px">
-        <h2>What you can make</h2>
+        <h2>What this company can make</h2>
         <div id="fRecipes"></div>
       </div>
     </div>
@@ -681,15 +693,15 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <!-- Game scripts. Bump ?v= on every release so browsers never mix old and new files. -->
 <!-- Phase 1: wallets and the Pi coin exchange -->
-<script src="economy.js?v=20261021-1650"></script>
+<script src="economy.js?v=20261021-1900"></script>
 <!-- Phase 2: companies, shares and dividends -->
-<script src="companies.js?v=20261021-1650"></script>
+<script src="companies.js?v=20261021-1900"></script>
 <!-- Phase 3: production -->
-<script src="factory.js?v=20261021-1650"></script>
+<script src="factory.js?v=20261021-1900"></script>
 <!-- Phase 4: marketplace for goods -->
-<script src="market.js?v=20261021-1650"></script>
+<script src="market.js?v=20261021-1900"></script>
 
 <!-- Mining on the shared Pi blockchain + sign-in (loads last) -->
-<script src="miner.js?v=20261021-1650"></script>
+<script src="miner.js?v=20261021-1900"></script>
 </body>
 </html>
