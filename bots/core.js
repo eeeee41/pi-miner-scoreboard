@@ -18,6 +18,8 @@
      4. trades Pi coin around its recent average price
      5. leaves a few resting buy and sell orders for players to trade with
 
+   Bots never trade with each other, and never bid more than 25% above
+   what players have recently paid, so they can't invent prices on their own.
    Bots never hold more than 10% of a company and can never take control
    of one (the game and the rules skip bots when handing over control).
    This file runs both in Node (firebase-admin) and in the browser tests.
@@ -77,7 +79,13 @@
       const crosses = (p) => (side === "buy" ? p <= price : p >= price);
       const better = (a, c) => (side === "buy" ? a.p - c.p : c.p - a.p) || ms(a.createdAt) - ms(c.createdAt);
       const snap = await book(asset, other).orderBy("p", side === "buy" ? "asc" : "desc").limit(DEPTH).get();
-      const candidates = snap.docs.map(asOrder).filter((o) => crosses(o.p) && o.uid !== b.id).sort(better);
+      const opposite = snap.docs.map(asOrder).filter((o) => typeof o.p === "number");
+      // Bots never trade with each other (that would invent prices nobody paid), and a resting order
+      // stops one cent short of any other bot's order on the other side, so the book never crosses
+      const botBest = opposite.filter((o) => isBot(o.uid)).map((o) => o.p);
+      if (rest && botBest.length) price = side === "buy" ? Math.min(price, Math.min(...botBest) - 1) : Math.max(price, Math.max(...botBest) + 1);
+      if (!(price >= 1)) return { filled: 0, value: 0, rest: 0 };
+      const candidates = opposite.filter((o) => crosses(o.p) && !isBot(o.uid)).sort(better);
       if (!candidates.length && !rest) return { filled: 0, value: 0, rest: 0 };
       return db.runTransaction(async (tx) => {
         const meSnap = await tx.get(userRef(b.id));
@@ -85,7 +93,7 @@
         const company = isPi(asset) ? null : await tx.get(companyRef(asset));
         const fresh = [];
         for (const c of candidates) { const s = await tx.get(c.ref); if (s.exists) fresh.push(asOrder(s)); }
-        const live = fresh.filter((o) => typeof o.p === "number" && o.remaining > 0 && o.uid !== b.id && crosses(o.p)).sort(better);
+        const live = fresh.filter((o) => typeof o.p === "number" && o.remaining > 0 && !isBot(o.uid) && crosses(o.p)).sort(better);
         const fills = [];
         let left = qty;
         for (const o of live) {
@@ -193,14 +201,21 @@
 
     /* ---------- the market as it stands ---------- */
     const companies = (await db.collection("companies").get()).docs.map((d) => d.data()).filter((c) => c && c.shares > 0);
+    // Best price a player is offering (bots' own orders don't count: bots don't trade with bots)
     async function top(asset, side) {
-      const s = await book(asset, side).orderBy("p", side === "buy" ? "desc" : "asc").limit(1).get();
-      const o = s.docs.map(asOrder).find((x) => typeof x.p === "number");
+      const s = await book(asset, side).orderBy("p", side === "buy" ? "desc" : "asc").limit(DEPTH).get();
+      const o = s.docs.map(asOrder).find((x) => typeof x.p === "number" && !isBot(x.uid));
       return o ? o.p : null;
     }
-    const trades = (await tradesCol("PI").orderBy("at", "desc").limit(AVG_TRADES).get()).docs.map((d) => d.data());
-    const piQty = trades.reduce((a, t) => a + t.qty, 0);
-    const piAvg = piQty ? trades.reduce((a, t) => a + t.qty * t.price, 0) / piQty : null;
+    // What players have actually paid lately (trades between two bots don't count)
+    async function playerAvg(asset) {
+      const ts = (await tradesCol(asset).orderBy("at", "desc").limit(AVG_TRADES).get()).docs.map((d) => d.data())
+        .filter((t) => !(isBot(t.buyer) && isBot(t.seller)));
+      const q = ts.reduce((a, t) => a + t.qty, 0);
+      return q ? ts.reduce((a, t) => a + t.qty * t.price, 0) / q : null;
+    }
+    const piAvg = await playerAvg("PI");
+    const MAX_CHASE = 1.25;      // never bid more than 25% above what players have recently paid
 
     /* ---------- each bot ---------- */
     for (const b of bots) {
@@ -212,7 +227,10 @@
 
       for (const c of companies) {
         const fair = (c.treasury + b.horizon * (c.dividendPerHour || 0)) / c.shares;   // cents per share
-        const bid = Math.floor(fair * b.buyAt), ask = Math.max(1, Math.ceil(fair * b.sellAt));
+        const recent = c.tradingClosed ? null : await playerAvg(c.ticker);
+        let bid = Math.floor(fair * b.buyAt);
+        if (recent) bid = Math.min(bid, Math.floor(recent * MAX_CHASE));
+        const ask = Math.max(1, Math.ceil(fair * b.sellAt), recent ? Math.ceil(recent) : 1);
         const cap = Math.floor(MAX_STAKE * c.shares);
         let held = await holding(c.ticker);
         const w = await wallet();
