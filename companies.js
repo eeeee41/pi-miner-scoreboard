@@ -76,8 +76,9 @@ const Companies = (() => {
         shares: FOUNDER_SHARES, treasury: invest, dividendPerHour: 0, offerPrice: 0, offerLeft: 0,
         lastPayoutAt: Math.floor(Date.now() / HOUR) * HOUR, createdAt: now()
       });
+      const coins = Economy.payFee(tx, w, "Founding a company");
       tx.set(holderRef(ticker, uid), { uid, name: me, shares: FOUNDER_SHARES });
-      tx.update(userRef(uid), { cash: w.cash - cost });
+      tx.update(userRef(uid), { cash: w.cash - cost, coins });
       tx.set(userRef(uid).collection("history").doc(`founded-${ticker}`), { kind: "founded", asset: ticker, amount: cost, at: now() });
     });
   }
@@ -92,8 +93,9 @@ const Companies = (() => {
       if (qty > c.offerLeft) throw new Error(`Only ${fmtShares(c.offerLeft)} are on offer.`);
       const cost = qty * c.offerPrice;
       if ((w.cash || 0) < cost) throw new Error(`That costs ${fmtCash(cost)} and you have ${fmtCash(w.cash || 0)}.`);
+      const coins = Economy.payFee(tx, w, "Buying shares");
       tx.update(companyRef(ticker), { shares: c.shares + qty, offerLeft: c.offerLeft - qty, treasury: c.treasury + cost });
-      tx.update(userRef(uid), { cash: w.cash - cost });
+      tx.update(userRef(uid), { cash: w.cash - cost, coins });
       tx.set(holderRef(ticker, uid), { uid, name: myName(), shares: ((h.exists && h.data().shares) || 0) + qty }, { merge: true });
       tx.set(userRef(uid).collection("history").doc(), { kind: "offering", asset: ticker, qty, price: c.offerPrice, at: now() });
     });
@@ -106,8 +108,9 @@ const Companies = (() => {
       if (!c || c.controller !== uid) throw new Error(`Only whoever runs ${ticker} can add Cash to its treasury.`);
       const w = (await tx.get(userRef(uid))).data() || {};
       if ((w.cash || 0) < amount) throw new Error(`You have ${fmtCash(w.cash || 0)} available.`);
+      const coins = Economy.payFee(tx, w, "Adding Cash to a treasury");
       tx.update(companyRef(ticker), { treasury: c.treasury + amount });
-      tx.update(userRef(uid), { cash: w.cash - amount });
+      tx.update(userRef(uid), { cash: w.cash - amount, coins });
       tx.set(userRef(uid).collection("history").doc(), { kind: "deposit", asset: ticker, amount, at: now() });
     });
   }

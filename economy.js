@@ -24,6 +24,8 @@
    ===================================================================== */
 const Economy = (() => {
   const START_CASH = 1000000;               // $10,000.00 in cents — keep in sync with firestore.rules
+  const START_PI = 10;                      // starter Pi, given once — keep in sync with firestore.rules
+  const FEE = 1;                            // Pi per transaction, paid to the miner of the next block
   const BOOK_ROWS = 10;
   const MATCH_DEPTH = 25;
   const MAX_FILLS = 9;
@@ -90,21 +92,41 @@ const Economy = (() => {
     return (err && err.message) || "Something went wrong.";
   }
 
+  /* ---------- Pi fees ----------
+     Every basic transaction costs FEE Pi. Fees collect in meta/fees and the miner of the next block
+     receives them on top of the block reward. Call inside a transaction, after reading the wallet
+     (`me`); returns the player's Pi after the fee, which the caller writes with the rest of the wallet
+     change (a wallet is written once per transaction). */
+  const feesRef = () => db.collection("meta").doc("fees");
+  function payFee(tx, me, what = "This") {
+    const coins = (me && me.coins) || 0;
+    if (coins < FEE)
+      throw new Error(`${what} costs a ${FEE} Pi fee, and you have no Pi. Mine a block, or buy Pi on the Exchange (buying Pi is free when you have none).`);
+    tx.set(feesRef(), { pool: inc(FEE) }, { merge: true });
+    return coins - FEE;
+  }
+
   /* ---------- wallet setup ---------- */
   async function ensureWallet(u) {
     const ref = userRef(u.uid);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       const grant = { kind: "grant", amount: START_CASH, at: now() };
+      const piGrant = { kind: "piGrant", amount: START_PI, at: now() };
       if (!snap.exists) {
         tx.set(ref, {
-          displayName: myName(), coins: 0, cash: START_CASH, batches: 0,
-          cashGranted: true, createdAt: now(), lastBatchAt: now()
+          displayName: myName(), coins: START_PI, cash: START_CASH, batches: 0,
+          cashGranted: true, piGranted: true, createdAt: now(), lastBatchAt: now()
         });
         tx.set(ref.collection("history").doc("starting-cash"), grant);
+        tx.set(ref.collection("history").doc("starting-pi"), piGrant);
       } else if (!snap.data().cashGranted) {
         tx.update(ref, { cash: (snap.data().cash || 0) + START_CASH, cashGranted: true });
         tx.set(ref.collection("history").doc("starting-cash"), grant);
+      } else if (!snap.data().piGranted) {
+        // Players from before Pi fees get their starter Pi once
+        tx.update(ref, { coins: (snap.data().coins || 0) + START_PI, piGranted: true });
+        tx.set(ref.collection("history").doc("starting-pi"), piGrant);
       }
     });
   }
@@ -116,7 +138,7 @@ const Economy = (() => {
     if (isClosed(o.asset)) throw new Error(`Trading in ${o.asset} shares is closed by its controller.`);
     let left = o.qty, filled = 0, value = 0, rest = 0;
     for (let round = 0; round < 50 && left > 0; round++) {
-      const r = await placeChunk(o.asset, { ...o, qty: left }, round > 0);
+      const r = await placeChunk(o.asset, { ...o, qty: left }, round > 0, round === 0);
       filled += r.filled;
       value += r.value;
       rest = r.rest;
@@ -127,7 +149,7 @@ const Economy = (() => {
   }
 
   // One transaction: fill up to MAX_FILLS resting orders, then rest any remainder (limit orders).
-  async function placeChunk(asset, { side, type, qty, price }, continuing) {
+  async function placeChunk(asset, { side, type, qty, price }, continuing, withFee) {
     const uid = user.uid, name = myName();
     const other = side === "buy" ? "sell" : "buy";
     const crosses = (p) => type === "market" || (side === "buy" ? p <= price : p >= price);
@@ -179,10 +201,17 @@ const Economy = (() => {
         cash -= need;
         held += filled;
       } else {
-        const need = filled + rest;
-        if (need > held) throw new Error(`Not enough to sell: this needs ${fmtQty(need, asset)} and you have ${fmtQty(held, asset)}.`);
-        held -= need;
+        const need = filled + rest + (withFee && isPi(asset) ? FEE : 0);
+        if (need > held) throw new Error(`Not enough to sell: this needs ${fmtQty(need, asset)}${withFee && isPi(asset) ? ` (including the ${FEE} Pi fee)` : ""} and you have ${fmtQty(held, asset)}.`);
+        held -= filled + rest;
         cash += value;
+      }
+      // The order's Pi fee (once per order). Buying Pi with no Pi at all is free, so nobody gets stuck.
+      let coinsAfter = null;
+      if (withFee) {
+        if (isPi(asset)) {
+          if (side === "sell" || (me.coins || 0) >= FEE) { held -= FEE; tx.set(feesRef(), { pool: inc(FEE) }, { merge: true }); }
+        } else coinsAfter = payFee(tx, me, "Every order");
       }
 
       // Fill resting orders, record trades, pay the other players.
@@ -216,7 +245,7 @@ const Economy = (() => {
 
       if (isPi(asset)) tx.update(userRef(uid), { cash, coins: held });
       else {
-        tx.update(userRef(uid), { cash });
+        tx.update(userRef(uid), coinsAfter == null ? { cash } : { cash, coins: coinsAfter });
         tx.set(holderRef(asset, uid), { uid, name, shares: held }, { merge: true });
         if (fills.length) tx.update(companyRef(asset), { lastPrice: fills[fills.length - 1].o.p });
       }
@@ -342,6 +371,9 @@ const Economy = (() => {
     g("xClosed").textContent = closed ? `${st.asset}'s controller has closed trading in its shares. Open orders can still be cancelled, and new shares only come from the company's own offerings on the Stocks tab.` : "";
 
     g("xAvail").textContent = side === "buy" ? fmtCash(st.wallet.cash) : fmtQty(st.held[st.asset] || 0);
+    const myPi = st.wallet.coins || 0;
+    g("xFee").textContent = isPi(st.asset) && side === "buy" && myPi < FEE ? "free (you have no Pi)"
+      : `${FEE} Pi${myPi < FEE ? " · you have none" : ` · you have ${fmtPi(myPi)}`}`;
     g("xTotalLabel").textContent = side === "buy" ? "You pay" : "You receive";
     if (!(qty > 0)) { g("xTotal").textContent = "—"; return; }
     if (type === "market") {
@@ -563,9 +595,10 @@ const Economy = (() => {
       let when = ago(ms(h.at)), text, amt;
       switch (h.kind) {
         case "grant": text = "Starting Cash"; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
+        case "piGrant": text = "Starter Pi, for transaction fees"; amt = ["pos", `+${fmtPi(h.amount)}`]; break;
         case "block":
-          text = `Mined block #${h.height}${h.trades ? `, confirming ${h.trades} trade${h.trades === 1 ? "" : "s"}` : ""}`;
-          amt = ["pos", `+${fmtPi(h.reward)}`]; break;
+          text = `Mined block #${h.height}${h.trades ? `, confirming ${h.trades} trade${h.trades === 1 ? "" : "s"}` : ""}${h.fees ? `, plus ${fmtPi(h.fees)} in fees` : ""}`;
+          amt = ["pos", `+${fmtPi(h.reward + (h.fees || 0))}`]; break;
         case "bought":
           text = `The market bought your ${fmtQty(h.qty, a)} at ${fmtCash(h.price)} each after 10 days unsold`;
           amt = ["pos", `+${fmtCash(h.qty * h.price)}`]; break;
@@ -740,5 +773,5 @@ const Economy = (() => {
   }
   function setShareValue(v) { st.shareValue = v; renderWallet(); }
 
-  return { init, signIn, signOut, setMarkets, openMarket, setShareValue, upkeep, fmtCash, errText };
+  return { init, signIn, signOut, setMarkets, openMarket, setShareValue, upkeep, fmtCash, errText, payFee, FEE };
 })();

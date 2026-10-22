@@ -44,6 +44,7 @@ const Market = (() => {
   const now = () => fb.firestore.FieldValue.serverTimestamp();
   const companyRef = (t) => db.collection("companies").doc(t);
   const factoryRef = (t) => companyRef(t).collection("factory").doc("main");
+  const userRef = (uid) => db.collection("users").doc(uid);
   const listings = (item) => db.collection("items").doc(item).collection("listings");
   const sales = (item) => db.collection("items").doc(item).collection("sales");
   const asListing = (d) => ({ id: d.id, ref: d.ref, ...d.data({ serverTimestamps: "estimate" }) });
@@ -83,13 +84,16 @@ const Market = (() => {
       if (have < qty) throw new Error(`The warehouse has ${qtyName(item, have)}.`);
       const fee = feeFor(qty, price);
       if (c.treasury < fee) throw new Error(`The ${fmtCash(fee)} listing fee needs more in the treasury.`);
+      const me = (await tx.get(userRef(uid))).data() || {};
+      const coins = Economy.payFee(tx, me, "Listing goods");
+      tx.update(userRef(uid), { coins });
       f.inventory[item] = have - qty;
       tx.set(factoryRef(t), { ...f, updatedAt: now() });
       tx.update(companyRef(t), { treasury: c.treasury - fee });
       tx.set(listings(item).doc(), {
         company: t, companyName: c.name.slice(0, 40), item, qty, remaining: qty, price, p: price, status: "open", createdAt: now()
       });
-      return `✓ Listed ${qtyName(item, qty)} at ${fmtCash(price)} each (fee ${fmtCash(fee)}).`;
+      return `✓ Listed ${qtyName(item, qty)} at ${fmtCash(price)} each (fees: ${fmtCash(fee)} from the treasury and ${Economy.FEE} Pi from you).`;
     });
   }
 
@@ -107,6 +111,8 @@ const Market = (() => {
       if (qty > d.remaining) throw new Error(`Only ${qtyName(d.item, d.remaining)} left in that listing.`);
       const cost = qty * d.price;
       if (cost > buyer.treasury) throw new Error(`That costs ${fmtCash(cost)}; ${t}'s treasury has ${fmtCash(buyer.treasury)}.`);
+      const me = (await tx.get(userRef(uid))).data() || {};
+      tx.update(userRef(uid), { coins: Economy.payFee(tx, me, "Buying goods") });
       const f = fsnap.exists ? Factory.clone(fsnap.data()) : Factory.blank();
       f.inventory[d.item] = (f.inventory[d.item] || 0) + qty;
       const remaining = d.remaining - qty;

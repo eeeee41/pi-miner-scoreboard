@@ -364,6 +364,7 @@ async function prepareJob() {
 // Save a solved block — only if it still extends the tip. Returns { lost } or throws.
 async function submitBlock(b) {
   const metaRef = db.collection("meta").doc("chain");
+  const feesRef = db.collection("meta").doc("fees");      // Pi fees waiting for the next block
   const userRef = db.collection("users").doc(b.miner);
   const now = firebase.firestore.FieldValue.serverTimestamp();
   const minerName = (state.user.displayName || "Anonymous Miner").slice(0, 40);
@@ -378,6 +379,8 @@ async function submitBlock(b) {
       };
     }
     const me = (await tx.get(userRef)).data() || {};
+    const feeSnap = await tx.get(feesRef);
+    const fees = feeSnap.exists ? feeSnap.data().pool || 0 : 0;
     const tip = {
       height: b.height, hash: b.hash, timestamp: b.timestamp, minerName,
       nextWork: nextWork(b.work, b.prevTimestamp, b.timestamp),
@@ -386,19 +389,21 @@ async function submitBlock(b) {
 
     tx.set(db.collection("chain").doc(String(b.height)), {
       height: b.height, hash: b.hash, prevHash: b.prevHash, timestamp: b.timestamp,
-      miner: b.miner, minerName, nonce: b.nonce, reward: b.reward, work: b.work,
+      miner: b.miner, minerName, nonce: b.nonce, reward: b.reward, fees, work: b.work,
       txRoot: b.txRoot, txIds: b.txIds, at: now
     });
+    if (fees) tx.set(feesRef, { pool: 0 });
     tx.set(metaRef, { ...tip, at: now });
     for (const key of b.txIds) {
       const [asset, id] = key.split("/");
       tx.update(tradesCol(asset).doc(id), { block: b.height });
     }
-    tx.update(userRef, { coins: (me.coins || 0) + b.reward, blocksMined: (me.blocksMined || 0) + 1 });
+    // The miner gets the block reward (new Pi) plus every fee paid since the last block (existing Pi)
+    tx.update(userRef, { coins: (me.coins || 0) + b.reward + fees, blocksMined: (me.blocksMined || 0) + 1 });
     tx.set(userRef.collection("history").doc(`block-${b.height}`), {
-      kind: "block", height: b.height, reward: b.reward, trades: b.txIds.length, at: now
+      kind: "block", height: b.height, reward: b.reward, fees, trades: b.txIds.length, at: now
     });
-    return { lost: false, tip };
+    return { lost: false, tip, fees };
   });
 }
 
@@ -468,7 +473,7 @@ async function runMiner() {
       } else {
         setTip(result.tip);                    // build on our own block right away, without waiting for the listener
         const n = block.txIds.length;
-        setStatus(`✓ You mined block #${block.height}: +${block.reward} Pi${n ? ` and confirmed ${n} trade${n === 1 ? "" : "s"}` : ""}.`, "ok");
+        setStatus(`✓ You mined block #${block.height}: +${block.reward} Pi${result.fees ? ` + ${result.fees} Pi in fees` : ""}${n ? ` and confirmed ${n} trade${n === 1 ? "" : "s"}` : ""}.`, "ok");
         $("mineMeta").textContent =
           `Block #${block.height} solved · nonce ${block.nonce.toLocaleString()} · ${fmtBig(block.attempts)} hashes · ${fmtTime(block.ms)}`;
       }
@@ -518,7 +523,7 @@ function render() {
   const work = clampWork(state.tip.nextWork || START_WORK);
   $("nextHeight").textContent = state.tipLoaded ? `#${h.toLocaleString()}` : "…";
   $("nextSub").textContent = state.tipLoaded
-    ? `Reward ${rewardAt(h)} Pi · ${state.pending}${state.pending >= MAX_BLOCK_TRADES ? "+" : ""} trade${state.pending === 1 ? "" : "s"} waiting to be confirmed`
+    ? `Reward ${rewardAt(h)} Pi${state.feePool ? ` + ${state.feePool.toLocaleString()} Pi in fees` : ""} · ${state.pending}${state.pending >= MAX_BLOCK_TRADES ? "+" : ""} trade${state.pending === 1 ? "" : "s"} waiting to be confirmed`
     : "Loading the chain…";
   $("workSub").textContent = `Difficulty: about ${fmtBig(work)} hashes per block, aiming for one block a minute`;
   if (!state.mining) $("blockBar").style.width = "0%";
@@ -563,7 +568,7 @@ function renderChain() {
     const mine = state.user && b.miner === state.user.uid;
     const n = (b.txIds || []).length;
     left.append(el("b", null, `#${b.height}`),
-      document.createTextNode(`  ${mine ? "you" : b.minerName} · +${b.reward} Pi · ${n} trade${n === 1 ? "" : "s"} · ${ago(tsMs(b.at))}`));
+      document.createTextNode(`  ${mine ? "you" : b.minerName} · +${b.reward + (b.fees || 0)} Pi${b.fees ? ` (${b.fees} in fees)` : ""} · ${n} trade${n === 1 ? "" : "s"} · ${ago(tsMs(b.at))}`));
     const ok = state.checked.get(b.hash);
     const tag = ok === undefined ? el("span", "tag unsaved", "checking…")
       : ok ? el("span", "tag saved", "✓ verified") : el("span", "tag bad", "✗ doesn't add up");
@@ -703,6 +708,12 @@ function handleAuth(user) {
       : { height: 0, hash: GENESIS_HASH, timestamp: 0, nextWork: START_WORK, supply: 0 });
     render();
   }), fail("Chain")));
+
+  // Fees waiting for whoever mines the next block
+  unsubs.push(db.collection("meta").doc("fees").onSnapshot(live((snap) => {
+    state.feePool = snap.exists ? snap.data().pool || 0 : 0;
+    render();
+  }), () => {}));
 
   unsubs.push(db.collection("chain").orderBy("height", "desc").limit(CHAIN_SHOWN).onSnapshot(live((snap) => {
     state.blocks = snap.docs.map((d) => d.data({ serverTimestamps: "estimate" }));

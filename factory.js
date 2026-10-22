@@ -542,6 +542,8 @@ const Factory = (() => {
         const d = await tx.get(contractsCol().doc(id));
         if (d.exists) contracts.push({ id, ref: d.ref, data: { ...d.data() }, dirty: false });
       }
+      // Paid actions cost a Pi fee from the player's wallet
+      const meSnap = opts.fee ? await tx.get(db.collection("users").doc(uid)) : null;
       const now = Date.now(), made = {};
       let treasury = c.treasury + settle(f, now, dem, made);
       treasury = settleContracts(f, t, treasury, contracts, made);
@@ -555,6 +557,7 @@ const Factory = (() => {
       resume(f, now, treasury);
       if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury && !contracts.some((k) => k.dirty)) return "";   // nothing to save
       if (treasury < 0) throw new Error(`The treasury only has ${fmtCash(c.treasury)}.`);
+      if (meSnap) tx.update(meSnap.ref, { coins: Economy.payFee(tx, meSnap.data() || {}, opts.fee === true ? "That" : opts.fee) });
       tx.set(factoryRef(t), { ...f, updatedAt: fb.firestore.FieldValue.serverTimestamp() });
       if (treasury !== c.treasury) tx.update(companyRef(t), { treasury });
       for (const [k, d] of Object.entries(dem)) if (d.touched) tx.set(demandRef(k), { load: d.load, at: Math.round(d.at) });
@@ -570,7 +573,7 @@ const Factory = (() => {
     if (cost > treasury) throw new Error(`${qtyName(item, qty)} costs ${fmtCash(cost)}; the treasury has ${fmtCash(treasury)}.`);
     f.inventory[item] = (f.inventory[item] || 0) + qty;
     return { treasury: treasury - cost, msg: `✓ Bought ${qtyName(item, qty)} for ${fmtCash(cost)}.` };
-  });
+  }, undefined, { fee: "Buying from suppliers" });
 
   // Sell straight from the warehouse to game wholesalers, for half the materials value
   const sellWholesale = (item, qty) => act((f, treasury) => {
@@ -580,14 +583,14 @@ const Factory = (() => {
     f.inventory[item] -= qty;
     f.revenue += cash;
     return { treasury: treasury + cash, msg: `✓ Sold ${qtyName(item, qty)} to wholesalers for ${fmtCash(cash)}.` };
-  });
+  }, undefined, { fee: "Selling to wholesalers" });
 
   const buildLine = () => act((f, treasury, now, c) => {
     if (f.lines.length >= MAX_LINES) throw new Error(`A company can have at most ${MAX_LINES} production lines.`);
     if (treasury < LINE_COST) throw new Error(`A line costs ${fmtCash(LINE_COST)}; the treasury has ${fmtCash(treasury)}.`);
     f.lines.push({ id: Date.now().toString(36), recipe: recipesFor(c.industry)[0] || "steel", queued: 0, startedAt: null, made: 0 });
     return { treasury: treasury - LINE_COST, msg: `✓ Built line ${f.lines.length}.` };
-  });
+  }, undefined, { fee: "Building a line" });
 
   const cantMake = (c, k) => new Error(`${c.industry} companies can't make ${ITEMS[k].many}. Buy them on the Market from a company that can, or switch this company's industry on the Stocks tab.`);
   const setRecipe = (i, recipe) => act((f, treasury, now, c) => {
@@ -634,7 +637,7 @@ const Factory = (() => {
     const ms = baseMs / researchSpeed(f);
     f.project = { key, startedAt: now, endsAt: now + ms, baseMs };
     return { treasury: treasury - r.cost, msg: `✓ Started researching ${r.name}. Done in ${fmtDur(ms / 1000)}.` };
-  });
+  }, undefined, { fee: "Starting research" });
 
   const upgradeRobots = (i) => act((f, treasury, now) => {
     const line = f.lines[i], tier = (line.robots || 0) + 1, next = ROBOTS[tier];
@@ -644,7 +647,7 @@ const Factory = (() => {
     // Keep the unit in progress at the same percent done, then carry on at the new speed
     rebase(f, now, () => { line.robots = tier; });
     return { treasury: treasury - next.cost, msg: `✓ Line ${i + 1} now has ${next.name.toLowerCase()}: ${next.mult}× speed.` };
-  });
+  }, undefined, { fee: "A robot upgrade" });
 
   const hire = (cand) => act((f) => {
     if (f.staff.length >= MAX_STAFF) throw new Error(`A company can employ at most ${MAX_STAFF} people.`);
@@ -653,7 +656,7 @@ const Factory = (() => {
       f.staff.push({ ...cand, line: null, hiredAt: Date.now() });
     });
     return { msg: `✓ Hired ${cand.name} as a ${ROLES[cand.role].name.toLowerCase()} for ${fmtCash(cand.wage)}/hour.` };
-  });
+  }, undefined, { fee: "Hiring" });
 
   const assign = (id, lineId) => act((f, treasury, now) => {
     const s = f.staff.find((x) => x.id === id);
@@ -675,7 +678,7 @@ const Factory = (() => {
     if (treasury < cost) throw new Error(`Training costs ${fmtCash(cost)}; the treasury has ${fmtCash(treasury)}.`);
     rebase(f, now, () => { s.skill += 1; s.wage = wageFor(s.role, s.skill); });
     return { treasury: treasury - cost, msg: `✓ ${s.name} is now skill ${s.skill}; their wage is ${fmtCash(s.wage)}/hour.` };
-  });
+  }, undefined, { fee: "Training" });
 
   const fire = (id) => act((f, treasury, now) => {
     const s = f.staff.find((x) => x.id === id);

@@ -25,8 +25,8 @@ service cloud.firestore {
       // Wallet set up at first sign-in, with $10,000 starting Cash
       allow create: if signedIn() && request.auth.uid == uid
         && validName(request.resource.data.displayName)
-        && request.resource.data.keys().hasOnly(['displayName', 'coins', 'cash', 'batches', 'cashGranted', 'createdAt', 'lastBatchAt'])
-        && request.resource.data.coins == 0
+        && request.resource.data.keys().hasOnly(['displayName', 'coins', 'cash', 'batches', 'cashGranted', 'piGranted', 'createdAt', 'lastBatchAt'])
+        && request.resource.data.coins == 10 && request.resource.data.piGranted == true
         && request.resource.data.batches == 0
         && request.resource.data.cash == 1000000
         && request.resource.data.cashGranted == true
@@ -34,7 +34,7 @@ service cloud.firestore {
         && request.resource.data.lastBatchAt == request.time;
 
       allow update: if signedIn() && (
-        (request.auth.uid == uid && (walletChange() || startingCash()))
+        (request.auth.uid == uid && (walletChange() || startingCash() || starterPi()))
         || (request.auth.uid != uid && creditOnly())
       );
 
@@ -57,11 +57,12 @@ service cloud.firestore {
     function ownEntry(entry, uid) {
       let d = request.resource.data;
       return (d.kind == 'block'
-          && d.keys().hasOnly(['kind', 'height', 'reward', 'trades', 'at'])
+          && d.keys().hasOnly(['kind', 'height', 'reward', 'fees', 'trades', 'at'])
           && entry == 'block-' + string(d.height)
           && d.at == request.time
           && minedBy(d.height, uid, d.reward))
         || (entry == 'starting-cash' && d.kind == 'grant' && d.amount == 1000000)
+        || (entry == 'starting-pi' && d.kind == 'piGrant' && d.amount == 10)
         || (d.kind in ['founded', 'offering', 'deposit']
           && d.keys().hasOnly(['kind', 'asset', 'amount', 'qty', 'price', 'at'])
           && d.at == request.time
@@ -104,6 +105,13 @@ service cloud.firestore {
     }
 
     // One-time $10,000 for players whose wallet predates the exchange
+    // One-time 10 Pi for players whose wallet predates Pi fees
+    function starterPi() {
+      return !resource.data.get('piGranted', false)
+        && changed().hasOnly(['coins', 'piGranted'])
+        && request.resource.data.piGranted == true
+        && request.resource.data.coins == resource.data.get('coins', 0) + 10;
+    }
     function startingCash() {
       return !resource.data.get('cashGranted', false)
         && changed().hasOnly(['cash', 'cashGranted'])
@@ -467,7 +475,9 @@ service cloud.firestore {
     function newBlock(height) {
       let b = request.resource.data;
       let tip = getAfter(/databases/$(database)/documents/meta/chain).data;
-      return b.keys().hasOnly(['height', 'hash', 'prevHash', 'timestamp', 'miner', 'minerName', 'nonce', 'reward', 'work', 'txRoot', 'txIds', 'at'])
+      return b.keys().hasOnly(['height', 'hash', 'prevHash', 'timestamp', 'miner', 'minerName', 'nonce', 'reward', 'fees', 'work', 'txRoot', 'txIds', 'at'])
+        && b.get('fees', 0) is int && b.get('fees', 0) >= 0
+        && b.get('fees', 0) == (exists(/databases/$(database)/documents/meta/fees) ? get(/databases/$(database)/documents/meta/fees).data.get('pool', 0) : 0)
         && b.height is int && string(b.height) == height
         && b.miner == request.auth.uid && validName(b.minerName)
         && b.hash is string && b.hash.size() == 64
@@ -499,6 +509,20 @@ service cloud.firestore {
         && t.nextWork is int && t.nextWork > 0
         && t.supply == prevSupply + b.reward
         && t.at == request.time;
+    }
+
+    // Pi fees waiting for the next block. Anyone paying a fee adds to the pool (a little at a time);
+    // the miner of a new block empties it, taking exactly what that block records as its fees.
+    match /meta/fees {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.keys().hasOnly(['pool'])
+        && request.resource.data.pool is int && request.resource.data.pool >= 0 && request.resource.data.pool <= 10;
+      allow update: if signedIn() && request.resource.data.keys().hasOnly(['pool']) && request.resource.data.pool is int
+        && ((request.resource.data.pool > resource.data.pool && request.resource.data.pool - resource.data.pool <= 10)
+          || (request.resource.data.pool == 0
+            && getAfter(/databases/$(database)/documents/meta/chain).data.height == get(/databases/$(database)/documents/meta/chain).data.height + 1
+            && getAfter(/databases/$(database)/documents/chain/$(string(getAfter(/databases/$(database)/documents/meta/chain).data.height))).data.fees == resource.data.pool));
+      allow delete: if false;
     }
 
     // Everything else stays locked

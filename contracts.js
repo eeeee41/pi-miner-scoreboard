@@ -102,11 +102,11 @@ const Contracts = (() => {
       if (weReceive) { treasury = takePayment(f, treasury, d.pay, total(d), t); d.escrow = total(d); }
       ctx.created.push(d);
       return { treasury, msg: `✓ Offered ${p.ticker} a contract: ${terms(d)}.${weReceive ? ` ${payName(d.pay, d.escrow)} is set aside ${d.ongoing ? "as a deposit" : "until it's delivered or called off"}.` : ` ${p.ticker} sets the payment aside when it accepts.`}` };
-    });
+    }, { fee: "Offering a contract" });
   }
 
   // Change one contract this company is part of
-  function onContract(id, fn) {
+  function onContract(id, fn, fee) {
     const t = me();
     return Factory.actFor(t, (f, treasury, now, c, ctx) => {
       const k = ctx.contracts.find((x) => x.id === id);
@@ -114,7 +114,7 @@ const Contracts = (() => {
       const out = fn(k.data, f, treasury, t) || {};
       k.dirty = true;
       return out;
-    }, { contracts: [id] });
+    }, { contracts: [id], ...(fee ? { fee } : {}) });
   }
 
   const accept = (id) => onContract(id, (d, f, treasury, t) => {
@@ -123,7 +123,7 @@ const Contracts = (() => {
     if (d.to === t) { treasury = takePayment(f, treasury, d.pay, total(d), t); d.escrow = total(d); }
     d.status = "active";
     return { treasury, msg: `✓ Contract signed: ${terms(d)}.` };
-  });
+  }, "Signing a contract");
   const decline = (id) => onContract(id, (d, f, treasury, t) => {
     if (d.status !== "offered" || d.proposer === t) throw new Error("That offer is no longer open.");
     d.status = "declined";

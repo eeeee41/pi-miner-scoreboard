@@ -34,10 +34,15 @@
 
    Bots never hold more than 10% of a company and never run one: control
    only changes when a company's controller hands it over to a player.
+   Bots pay the same 1 Pi fee as players for every order and offering
+   purchase, so they buy Pi when they run low.
    This file runs both in Node (firebase-admin) and in the browser tests.
    ===================================================================== */
 (function (root) {
   const START_CASH = 10000000;     // $100,000 each
+  const START_PI = 10;             // starter Pi for transaction fees, like players
+  const FEE = 1;                   // Pi per order or offering purchase, paid to the next block's miner
+  const FEE_FLOAT = 8;             // a bot below this many Pi buys some, to keep paying fees
   const MAX_STAKE = 0.10;          // never more than 10% of a company
   const MAX_FILLS = 9;             // resting orders filled per trade
   const DEPTH = 10;                // order book rows each bot looks at
@@ -120,6 +125,7 @@
     const isPi = (a) => a === "PI";
     const inBand = (p, ref) => !!ref && p >= ref * BAND_LO && p <= ref * BAND_HI;
     const memRef = (t) => db.collection("botMemory").doc(t);
+    const feesRef = db.collection("meta").doc("fees");
     const summary = [];
     const bots = only ? BOTS.filter((b) => only.includes(b.id)) : BOTS;
 
@@ -127,9 +133,11 @@
     for (const b of bots) {
       const s = await userRef(b.id).get();
       if (!s.exists) {
-        await userRef(b.id).set({ displayName: b.name, coins: 0, cash: START_CASH, batches: 0, cashGranted: true,
+        await userRef(b.id).set({ displayName: b.name, coins: START_PI, cash: START_CASH, batches: 0, cashGranted: true, piGranted: true,
           createdAt: now(), lastBatchAt: now(), bot: true, openOrders: [] });
-        log(`${b.name}: opened a wallet with $${START_CASH / 100}`);
+        log(`${b.name}: opened a wallet with $${START_CASH / 100} and ${START_PI} Pi`);
+      } else if (!s.data().piGranted) {
+        await userRef(b.id).update({ coins: inc(START_PI), piGranted: true });
       }
     }
 
@@ -181,6 +189,16 @@
           cash += value;
         }
         if (!filled && !restQty) return { filled: 0, value: 0, rest: 0 };
+        // The order's Pi fee: from the Pi being traded, or from the wallet (buying Pi with none is free)
+        let coins = me.coins || 0, feePaid = false;
+        if (isPi(asset)) {
+          if (side === "sell") { if (held < FEE) return { filled: 0, value: 0, rest: 0 }; held -= FEE; feePaid = true; }
+          else if ((me.coins || 0) >= FEE) { held -= FEE; feePaid = true; }
+        } else {
+          if (coins < FEE) return { filled: 0, value: 0, rest: 0, noPi: true };
+          coins -= FEE; feePaid = true;
+        }
+        if (feePaid) tx.set(feesRef, { pool: inc(FEE) }, { merge: true });
         const credits = new Map();
         for (const { o, n } of fills) {
           const remaining = o.remaining - n;
@@ -210,7 +228,7 @@
           tx.set(o, { uid: b.id, name: b.name, side, price, p: price, qty: filled + restQty, remaining: restQty, filled, status: "open", createdAt: now() });
           orderPath = o.path;
         }
-        const wallet = isPi(asset) ? { cash, coins: held } : { cash };
+        const wallet = isPi(asset) ? { cash, coins: held } : { cash, coins };
         if (orderPath) wallet.openOrders = FieldValue.arrayUnion(orderPath);
         tx.update(userRef(b.id), wallet);
         if (!isPi(asset)) {
@@ -247,13 +265,14 @@
         const c = (await tx.get(companyRef(ticker))).data();
         const w = (await tx.get(userRef(b.id))).data() || {};
         const h = await tx.get(holderRef(ticker, b.id));
-        if (!c || !c.offerLeft || !c.offerPrice) return 0;
+        if (!c || !c.offerLeft || !c.offerPrice || (w.coins || 0) < FEE) return 0;
         const held = (h.exists && h.data().shares) || 0;
         const n = Math.min(qty, c.offerLeft, Math.floor((w.cash || 0) / c.offerPrice), Math.floor(MAX_STAKE * (c.shares + qty)) - held);
         if (n <= 0) return 0;
         const cost = n * c.offerPrice;
         tx.update(companyRef(ticker), { shares: c.shares + n, offerLeft: c.offerLeft - n, treasury: c.treasury + cost });
-        tx.update(userRef(b.id), { cash: w.cash - cost });
+        tx.update(userRef(b.id), { cash: w.cash - cost, coins: w.coins - FEE });
+        tx.set(feesRef, { pool: inc(FEE) }, { merge: true });
         tx.set(holderRef(ticker, b.id), { uid: b.id, name: b.name, shares: held + n }, { merge: true });
         tx.set(userRef(b.id).collection("history").doc(), { kind: "offering", asset: ticker, qty: n, price: c.offerPrice, at: now() });
         return n;
@@ -304,6 +323,12 @@
       const holding = (t) => holderRef(t, b.id).get().then((s) => (s.exists && s.data().shares) || 0);
       const resting = [];
       const sideTaken = new Map();     // asset → "buy" or "sell" this run: never both
+
+      // Keep enough Pi to pay fees: buy some from sellers near Pi's reference price
+      if (piRef && ((await wallet()).coins || 0) < FEE_FLOAT) {
+        const r = await trade(b, "PI", "buy", Math.ceil(piRef * BAND_HI), 20, false, piRef);
+        if (r.filled) { did.push(`bought ${r.filled} Pi for fees`); sideTaken.set("PI", "buy"); }
+      }
 
       for (const c of companies) {
         const { f, ref } = view.get(c.ticker);
