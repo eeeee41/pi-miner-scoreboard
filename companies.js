@@ -112,8 +112,8 @@ const Companies = (() => {
     });
   }
 
-  async function saveSettings(ticker, { dividendPerHour, offerPrice, offerLeft, industry }) {
-    await companyRef(ticker).update({ dividendPerHour, offerPrice, offerLeft, industry });
+  async function saveSettings(ticker, { dividendPerHour, offerPrice, offerLeft, industry, tradingClosed }) {
+    await companyRef(ticker).update({ dividendPerHour, offerPrice, offerLeft, industry, tradingClosed });
   }
 
   // Hand control to the biggest shareholder if they now hold more than the controller.
@@ -266,8 +266,10 @@ const Companies = (() => {
           : `Last payout (${when}): nothing, because no dividend was set.`;
     }
 
-    const trade = mk("button", "btn-primary buy", `Trade ${c.ticker} shares on the exchange`);
-    trade.addEventListener("click", () => Economy.openMarket(c.ticker));
+    const trade = c.tradingClosed
+      ? mk("p", "co-note", `${c.ticker}'s controller has closed trading in its shares, so they can't be bought or sold between players. New shares only come from the company's own offerings${c.offerLeft > 0 && c.offerPrice > 0 ? " (one is open below)" : ""}.`)
+      : mk("button", "btn-primary buy", `Trade ${c.ticker} shares on the exchange`);
+    if (!c.tradingClosed) trade.addEventListener("click", () => Economy.openMarket(c.ticker));
 
     const sections = [head, ctl, kpis, note, ...(lp ? [last] : []), trade];
 
@@ -316,6 +318,9 @@ const Companies = (() => {
       indSel.value = c.industry;
       indL.append(mk("span", null, "Industry (what its factory makes)"), indSel);
       r1.append(field("sDiv", "Dividend per hour, total ($)", { type: "number", min: 0, step: 0.01, value: (c.dividendPerHour / 100).toFixed(2) }), indL);
+      const closeL = mk("label", "check-row"); closeL.htmlFor = "sClosed";
+      const closeBox = mk("input"); closeBox.type = "checkbox"; closeBox.id = "sClosed"; closeBox.checked = !!c.tradingClosed;
+      closeL.append(closeBox, mk("span", null, "Close trading in our shares: no buying or selling between players on the Exchange. New shares only come from our own offerings."));
       const r2 = mk("div", "co-form");
       r2.append(
         field("sOfferPrice", "Offer new shares at ($ each)", { type: "number", min: 0, step: 0.01, value: (c.offerPrice / 100).toFixed(2) }),
@@ -328,11 +333,11 @@ const Companies = (() => {
         if (!(dividendPerHour >= 0) || !(offerPrice >= 0) || !(offerLeft >= 0)) throw new Error("Use zero or more for every box.");
         if (offerLeft > 0 && !offerPrice) throw new Error("Set a price for the new shares.");
         if (offerLeft > 10000000) throw new Error("Offer at most 10,000,000 new shares at a time.");
-        await saveSettings(c.ticker, { dividendPerHour, offerPrice, offerLeft, industry: g("sSetIndustry").value });
+        await saveSettings(c.ticker, { dividendPerHour, offerPrice, offerLeft, industry: g("sSetIndustry").value, tradingClosed: g("sClosed").checked });
         return "✓ Saved.";
       }, "sCtlMsg");
       const cmsg = mk("div", "status"); cmsg.id = "sCtlMsg";
-      sec.append(r1, r2, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes."), save, cmsg);
+      sec.append(r1, r2, closeL, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes."), save, cmsg);
       sections.push(sec);
     }
 

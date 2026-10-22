@@ -110,7 +110,10 @@ const Economy = (() => {
   }
 
   /* ---------- placing an order ---------- */
+  // A company's controller can close trading in its shares (no secondary market)
+  const isClosed = (asset) => !isPi(asset) && !!(st.markets.find((m) => m.ticker === asset) || {}).closed;
   async function placeOrder(o) {
+    if (isClosed(o.asset)) throw new Error(`Trading in ${o.asset} shares is closed by its controller.`);
     let left = o.qty, filled = 0, value = 0, rest = 0;
     for (let round = 0; round < 50 && left > 0; round++) {
       const r = await placeChunk(o.asset, { ...o, qty: left }, round > 0);
@@ -331,9 +334,12 @@ const Economy = (() => {
     g("xQtyLabel").textContent = isPi(st.asset) ? "Amount (Pi)" : `Amount (${st.asset} shares)`;
     g("xPriceLabel").textContent = isPi(st.asset) ? "Price per Pi ($)" : "Price per share ($)";
     const btn = g("xSubmit");
+    const closed = isClosed(st.asset);
     btn.className = "btn-primary " + side;
-    btn.textContent = st.busy ? "Placing order…" : `${side === "buy" ? "Buy" : "Sell"} ${unit}`;
-    btn.disabled = st.busy || !st.wallet.loaded;
+    btn.textContent = st.busy ? "Placing order…" : closed ? "Trading closed" : `${side === "buy" ? "Buy" : "Sell"} ${unit}`;
+    btn.disabled = st.busy || !st.wallet.loaded || closed;
+    g("xClosed").classList.toggle("hidden", !closed);
+    g("xClosed").textContent = closed ? `${st.asset}'s controller has closed trading in its shares. Open orders can still be cancelled, and new shares only come from the company's own offerings on the Stocks tab.` : "";
 
     g("xAvail").textContent = side === "buy" ? fmtCash(st.wallet.cash) : fmtQty(st.held[st.asset] || 0);
     g("xTotalLabel").textContent = side === "buy" ? "You pay" : "You receive";
@@ -356,6 +362,7 @@ const Economy = (() => {
 
   async function onSubmit() {
     const o = readForm();
+    if (isClosed(o.asset)) return setMsg(`Trading in ${o.asset} shares is closed by its controller.`, "err");
     if (!(o.qty >= 1)) return setMsg(`Enter how many whole ${isPi(o.asset) ? "Pi coins" : "shares"} to trade.`, "err");
     if (o.type === "limit" && !(o.price >= 1)) return setMsg("Enter a price of at least $0.01.", "err");
     st.busy = true; setMsg("", ""); renderForm();
@@ -496,13 +503,13 @@ const Economy = (() => {
   function renderMarketSelect() {
     const sel = g("xMarket");
     const want = st.markets.map((m) => m.ticker).join(",");
-    if (sel.dataset.list !== want) {
+    if (sel.dataset.list !== want + st.markets.map((m) => (m.closed ? 1 : 0)).join("")) {
       sel.replaceChildren(...st.markets.map((m) => {
-        const o = mk("option", null, isPi(m.ticker) ? "Pi coin (PI)" : `${m.ticker} · ${m.name}`);
+        const o = mk("option", null, isPi(m.ticker) ? "Pi coin (PI)" : `${m.ticker} · ${m.name}${m.closed ? " (trading closed)" : ""}`);
         o.value = m.ticker;
         return o;
       }));
-      sel.dataset.list = want;
+      sel.dataset.list = want + st.markets.map((m) => (m.closed ? 1 : 0)).join("");
     }
     sel.value = st.asset;
   }
@@ -722,7 +729,7 @@ const Economy = (() => {
 
   // Companies module → keeps the market list in sync and opens a company's market
   function setMarkets(companies) {
-    st.markets = [{ ticker: "PI", name: "Pi coin" }, ...companies.map((c) => ({ ticker: c.ticker, name: c.name }))];
+    st.markets = [{ ticker: "PI", name: "Pi coin" }, ...companies.map((c) => ({ ticker: c.ticker, name: c.name, closed: !!c.tradingClosed }))];
     if (user) for (const c of companies) watchMyOrders(c.ticker);
     renderMarketSelect();
   }

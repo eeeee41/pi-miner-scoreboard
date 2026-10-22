@@ -393,7 +393,7 @@ const Factory = (() => {
   // Count every unit finished by `now`. Things everyday buyers want are sold the moment each one is
   // made, at the price recent sales across the game allow; `dem` holds that shared demand and is
   // updated in place. Also notes how long each line ran, for upkeep. Returns the Cash the sales brought in.
-  function settle(f, now, dem = {}) {
+  function settle(f, now, dem = {}, made = {}) {
     let income = 0;
     if (f.project && now >= f.project.endsAt) {          // finished research
       f.research[f.project.key] = true;
@@ -413,6 +413,7 @@ const Factory = (() => {
         f.carsSold += n * each;
       } else {
         f.inventory[line.recipe] = (f.inventory[line.recipe] || 0) + n * each;
+        made[line.recipe] = (made[line.recipe] || 0) + n * each;
       }
       line.queued -= n;
       line.made = (line.made || 0) + n * each;
@@ -435,12 +436,79 @@ const Factory = (() => {
   }
 
   const demandRef = (k) => db.collection("demand").doc(k);
+  const contractsCol = () => db.collection("contracts");
+
+  /* ---------- supply contracts ----------
+     contracts/{id}: `from` supplies `qty` units of `item` to `to`; `to` pays `per` (cents, or units of the
+     `pay` good) for every `every` units delivered. The payment is set aside (`escrow`) when the receiving
+     company signs. Deliveries wait in the contract (`waiting`) until the receiver's factory collects them,
+     and payments wait (`owed`) until the supplier's collects them, because each factory is private. */
+  const MAX_CONTRACTS_PER_ACT = 8;    // keeps every save under Firestore's 20 rule lookups
+  const OPEN = ["offered", "active"];
+  const payDue = (d) => Math.floor(d.delivered / d.every) * d.per;
+  const needsMe = (d, t) => OPEN.includes(d.status)
+    || (d.from === t && d.owed > 0) || (d.to === t && (d.waiting > 0 || d.escrow > 0));
+  // Contracts this company should look at on its next save (read outside the transaction: queries can't run inside one)
+  async function contractIds(t) {
+    // The contracts panel already follows the open company's contracts live; otherwise ask
+    let docs = typeof Contracts !== "undefined" ? Contracts.cached(t) : null;
+    if (!docs) {
+      const [a, b] = await Promise.all([contractsCol().where("from", "==", t).get(), contractsCol().where("to", "==", t).get()]);
+      docs = [...a.docs, ...b.docs].map((d) => ({ id: d.id, data: d.data() }));
+    }
+    return docs.filter((d) => needsMe(d.data, t))
+      .sort((x, y) => (x.data.status === "active" ? 0 : 1) - (y.data.status === "active" ? 0 : 1))
+      .slice(0, MAX_CONTRACTS_PER_ACT).map((d) => d.id);
+  }
+  // Move goods along the company's contracts. `made` = what its lines just turned out.
+  function settleContracts(f, t, treasury, list, made) {
+    for (const k of list) {
+      const d = k.data;
+      if (d.from === t) {
+        // Freshly made goods go to the buyer first, up to what's left on the contract
+        const left = d.qty - d.delivered;
+        const u = d.status === "active" ? Math.min(made[d.item] || 0, left, f.inventory[d.item] || 0) : 0;
+        if (u > 0) {
+          f.inventory[d.item] -= u;
+          made[d.item] -= u;
+          deliver(d, u);
+          k.dirty = true;
+        }
+        if (d.owed > 0) {
+          if (d.pay === "cash") treasury += d.owed; else f.inventory[d.pay] = (f.inventory[d.pay] || 0) + d.owed;
+          d.owed = 0;
+          k.dirty = true;
+        }
+      }
+      if (d.to === t) {
+        if (d.waiting > 0) { f.inventory[d.item] = (f.inventory[d.item] || 0) + d.waiting; d.waiting = 0; k.dirty = true; }
+        // Over or called off: whatever payment was set aside and not earned comes back
+        if (!OPEN.includes(d.status) && d.escrow > 0) {
+          if (d.pay === "cash") treasury += d.escrow; else f.inventory[d.pay] = (f.inventory[d.pay] || 0) + d.escrow;
+          d.escrow = 0;
+          k.dirty = true;
+        }
+      }
+    }
+    return treasury;
+  }
+  // Hand over u units: they wait for the buyer, and the payment they've earned moves out of escrow
+  function deliver(d, u) {
+    const before = payDue(d);
+    d.delivered += u;
+    d.waiting += u;
+    const pay = Math.min(d.escrow, payDue(d) - before);
+    d.escrow -= pay;
+    d.owed += pay;
+    if (d.delivered >= d.qty) d.status = "done";
+  }
   const sig = (f) => JSON.stringify({ ...f, settledAt: null,
     lines: f.lines.map(({ busyDone, busyNow, busyHour, ...l }) => l) });
 
   // Every factory change: re-read, catch up on finished units and bills, apply the change, save.
-  async function act(change, t = st.ticker) {
+  async function act(change, t = st.ticker, opts = {}) {
     const uid = user.uid;
+    const ids = [...new Set([...(await contractIds(t).catch(() => [])), ...(opts.contracts || [])])];
     return db.runTransaction(async (tx) => {
       const c = (await tx.get(companyRef(t))).data();
       if (!c || c.controller !== uid) throw new Error("Only the company's controller can run its factory.");
@@ -452,19 +520,29 @@ const Factory = (() => {
       const selling = [...new Set(f.lines.filter((l) => l.queued && RECIPES[l.recipe].sellsFor).map((l) => l.recipe))];
       const dem = {};
       for (const k of selling) { const d = await tx.get(demandRef(k)); dem[k] = d.exists ? { ...d.data() } : { load: 0, at: 0 }; }
-      const now = Date.now();
-      let treasury = c.treasury + settle(f, now, dem);
+      const contracts = [];
+      for (const id of ids) {
+        const d = await tx.get(contractsCol().doc(id));
+        if (d.exists) contracts.push({ id, ref: d.ref, data: { ...d.data() }, dirty: false });
+      }
+      const now = Date.now(), made = {};
+      let treasury = c.treasury + settle(f, now, dem, made);
+      treasury = settleContracts(f, t, treasury, contracts, made);
       treasury = lineUpkeep(f, now, treasury);
       treasury = payroll(f, now, treasury);
       resume(f, now, treasury);
-      const res = change ? change(f, treasury, now, c) || {} : {};
+      const ctx = { contracts, created: [] };
+      const res = change ? change(f, treasury, now, c, ctx) || {} : {};
       if (res.treasury != null) treasury = res.treasury;
+      treasury = settleContracts(f, t, treasury, contracts, made);   // collect anything the change freed up (a refund, a delivery)
       resume(f, now, treasury);
-      if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury) return "";   // nothing to save
+      if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury && !contracts.some((k) => k.dirty)) return "";   // nothing to save
       if (treasury < 0) throw new Error(`The treasury only has ${fmtCash(c.treasury)}.`);
       tx.set(factoryRef(t), { ...f, updatedAt: fb.firestore.FieldValue.serverTimestamp() });
       if (treasury !== c.treasury) tx.update(companyRef(t), { treasury });
       for (const [k, d] of Object.entries(dem)) if (d.touched) tx.set(demandRef(k), { load: d.load, at: Math.round(d.at) });
+      for (const k of contracts) if (k.dirty) tx.set(k.ref, { ...k.data, updatedAt: now });
+      for (const d of ctx.created) tx.set(contractsCol().doc(), { ...d, createdAt: fb.firestore.FieldValue.serverTimestamp(), updatedAt: now });
       return res.msg || "";
     });
   }
@@ -990,7 +1068,7 @@ const Factory = (() => {
       more);
   }
 
-  function renderAll() { watchDemand(); renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderStaff(); renderRecipes(); }
+  function renderAll() { if (typeof Contracts !== "undefined") Contracts.watch(st.ticker); watchDemand(); renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderStaff(); renderRecipes(); }
 
   function watchFactory(ticker) {
     if (factoryUnsub) factoryUnsub();
@@ -1086,5 +1164,8 @@ const Factory = (() => {
     }
   }
 
-  return { init, signIn, signOut, upkeep, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, PRODUCTS, BASE_VALUE, supplierPrice, clone, blank, qtyName };
+  // For the contracts panel: run a change through the controller's factory save
+  const actFor = (t, change, opts) => act(change, t, opts);
+  const companies = () => st.companies;
+  return { init, signIn, signOut, upkeep, actFor, companies, deliver, payDue, MAX_CONTRACTS_PER_ACT, fmtDur, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, PRODUCTS, BASE_VALUE, supplierPrice, clone, blank, qtyName };
 })();

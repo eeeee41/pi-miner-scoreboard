@@ -661,6 +661,7 @@ function handleAuth(user) {
     Economy.signOut();
     Companies.signOut();
     Factory.signOut();
+    Contracts.signOut();
     Market.signOut();
     resetSession();
     $("dashboard").classList.add("hidden");
@@ -681,6 +682,7 @@ function handleAuth(user) {
 
   Economy.signIn(user);                        // wallet, starting Cash, exchange
   Companies.signIn(user);                      // companies, shares, dividends
+  Contracts.signIn(user);                      // supply contracts (before the factory opens one)
   Factory.signIn(user);                        // production
   Market.signIn(user);                         // goods marketplace
   const session = state.session;
@@ -749,6 +751,7 @@ if (typeof firebase === "undefined") {
   Economy.init(firebase, db);
   Companies.init(firebase, db);
   Factory.init(firebase, db);
+  Contracts.init(firebase, db);
   Market.init(firebase, db);
   auth.getRedirectResult().catch(showAuthError);
   auth.onAuthStateChanged(handleAuth);

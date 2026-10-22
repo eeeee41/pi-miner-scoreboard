@@ -133,6 +133,12 @@ service cloud.firestore {
         && o.createdAt == request.time;
     }
 
+    // A company's controller can close trading in its shares (no new orders)
+    function marketOpen(asset) {
+      return asset == 'PI'
+        || !get(/databases/$(database)/documents/companies/$(asset)).data.get('tradingClosed', false);
+    }
+
     // Anyone may fill an open order: remaining only shrinks, and leaves the book at zero
     function fillOrder() {
       let o = request.resource.data;
@@ -171,14 +177,14 @@ service cloud.firestore {
 
     match /market/{asset}/buys/{id} {
       allow read: if signedIn();
-      allow create: if signedIn() && newOrder('buy');
+      allow create: if signedIn() && newOrder('buy') && marketOpen(asset);
       allow update: if signedIn() && (fillOrder() || cancelOrder());
       allow delete: if false;
     }
 
     match /market/{asset}/sells/{id} {
       allow read: if signedIn();
-      allow create: if signedIn() && newOrder('sell');
+      allow create: if signedIn() && newOrder('sell') && marketOpen(asset);
       allow update: if signedIn() && (fillOrder() || cancelOrder() || expireOrder());
       allow delete: if false;
     }
@@ -266,7 +272,8 @@ service cloud.firestore {
     function companySettings() {
       let c = request.resource.data;
       return resource.data.controller == request.auth.uid
-        && changed().hasOnly(['dividendPerHour', 'offerPrice', 'offerLeft', 'industry'])
+        && changed().hasOnly(['dividendPerHour', 'offerPrice', 'offerLeft', 'industry', 'tradingClosed'])
+        && (!('tradingClosed' in c) || c.tradingClosed is bool)
         && c.industry is string && c.industry.size() > 0 && c.industry.size() <= 40
         && isCount(c.dividendPerHour) && isCount(c.offerPrice)
         && isCount(c.offerLeft) && c.offerLeft <= 10000000;
@@ -336,6 +343,43 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['load', 'at'])
         && request.resource.data.load is number && request.resource.data.load >= 0
         && request.resource.data.at is int && request.resource.data.at <= request.time.toMillis() + 60000;
+      allow delete: if false;
+    }
+
+    // ---------------- Supply contracts ----------------
+    // Readable by every player; written only by the controllers of the two companies.
+    // The terms never change after the offer; amounts are whole and never negative.
+    function contractShape(c) {
+      return c.keys().hasOnly(['from', 'fromName', 'to', 'toName', 'proposer', 'item', 'qty', 'every', 'pay', 'per',
+                               'delivered', 'escrow', 'waiting', 'owed', 'status', 'createdAt', 'updatedAt'])
+        && c.from is string && c.to is string && c.from != c.to
+        && c.fromName is string && c.fromName.size() <= 40 && c.toName is string && c.toName.size() <= 40
+        && isGood(c.item) && (c.pay == 'cash' || (isGood(c.pay) && c.pay != c.item))
+        && c.qty is int && c.qty > 0 && c.qty <= 1000000
+        && c.every is int && c.every > 0 && c.qty % c.every == 0
+        && c.per is int && c.per > 0
+        && isCount(c.delivered) && c.delivered <= c.qty
+        && isCount(c.escrow) && isCount(c.waiting) && isCount(c.owed)
+        && c.status in ['offered', 'active', 'done', 'declined', 'withdrawn', 'ended']
+        && c.updatedAt is int;
+    }
+    match /contracts/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && contractShape(request.resource.data)
+        && request.resource.data.status == 'offered'
+        && request.resource.data.proposer in [request.resource.data.from, request.resource.data.to]
+        && controls(request.resource.data.proposer)
+        && request.resource.data.delivered == 0 && request.resource.data.waiting == 0 && request.resource.data.owed == 0
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn() && contractShape(request.resource.data)
+        && (controls(resource.data.from) || controls(resource.data.to))
+        && request.resource.data.from == resource.data.from && request.resource.data.to == resource.data.to
+        && request.resource.data.proposer == resource.data.proposer
+        && request.resource.data.item == resource.data.item && request.resource.data.qty == resource.data.qty
+        && request.resource.data.every == resource.data.every
+        && request.resource.data.pay == resource.data.pay && request.resource.data.per == resource.data.per
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.delivered >= resource.data.delivered;
       allow delete: if false;
     }
 
