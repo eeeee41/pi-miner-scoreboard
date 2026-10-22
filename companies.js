@@ -103,6 +103,7 @@ const Companies = (() => {
     const uid = user.uid;
     await db.runTransaction(async (tx) => {
       const c = (await tx.get(companyRef(ticker))).data();
+      if (!c || c.controller !== uid) throw new Error(`Only whoever runs ${ticker} can add Cash to its treasury.`);
       const w = (await tx.get(userRef(uid))).data() || {};
       if ((w.cash || 0) < amount) throw new Error(`You have ${fmtCash(w.cash || 0)} available.`);
       tx.update(companyRef(ticker), { treasury: c.treasury + amount });
@@ -249,7 +250,7 @@ const Companies = (() => {
     );
 
     const note = mk("p", "co-note");
-    if (c.dividendPerHour && c.treasury < c.dividendPerHour) note.textContent = "The treasury can't cover the next hour's dividend, so it will be skipped until someone adds Cash.";
+    if (c.dividendPerHour && c.treasury < c.dividendPerHour) note.textContent = "The treasury can't cover the next hour's dividend, so it will be skipped until the treasury has more Cash.";
     else if (c.dividendPerHour) note.textContent = `Next payout in about ${mins} min (paid when anyone has the game open).`;
     if (c.dividendPerHour) note.textContent += " Wages and line upkeep come out of the treasury first.";
     // What happened at the last payout
@@ -287,20 +288,22 @@ const Companies = (() => {
       sections.push(sec);
     }
 
-    // Add Cash to the treasury (anyone)
-    const dep = mk("div", "co-sec");
-    dep.append(mk("h3", null, "Add Cash to the treasury"));
-    const drow = mk("div", "co-form");
-    drow.append(field("sDeposit", "Amount ($)", { type: "number", min: 0.01, step: 0.01, value: "100.00" }));
-    drow.append(actionButton("Add to treasury", "btn-ghost", async () => {
-      const a = toCents(g("sDeposit").value);
-      if (!(a >= 1)) throw new Error("Enter an amount of at least $0.01.");
-      await deposit(c.ticker, a);
-      return `✓ Added ${fmtCash(a)}. It can only come out as dividends to every shareholder.`;
-    }, "sDepositMsg"));
-    const dmsg = mk("div", "status"); dmsg.id = "sDepositMsg";
-    dep.append(drow, dmsg);
-    sections.push(dep);
+    // Add Cash to the treasury (the controller only)
+    if (isController) {
+      const dep = mk("div", "co-sec");
+      dep.append(mk("h3", null, "Add Cash to the treasury"));
+      const drow = mk("div", "co-form");
+      drow.append(field("sDeposit", "Amount ($)", { type: "number", min: 0.01, step: 0.01, value: "100.00" }));
+      drow.append(actionButton("Add to treasury", "btn-ghost", async () => {
+        const a = toCents(g("sDeposit").value);
+        if (!(a >= 1)) throw new Error("Enter an amount of at least $0.01.");
+        await deposit(c.ticker, a);
+        return `✓ Added ${fmtCash(a)}. It can only come out as dividends to every shareholder.`;
+      }, "sDepositMsg"));
+      const dmsg = mk("div", "status"); dmsg.id = "sDepositMsg";
+      dep.append(drow, dmsg);
+      sections.push(dep);
+    }
 
     // Controller settings
     if (isController) {

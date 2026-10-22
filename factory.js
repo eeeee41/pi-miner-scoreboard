@@ -694,7 +694,7 @@ const Factory = (() => {
       : `Each line costs ${fmtCash(UPKEEP_IDLE)}/hour sitting idle and up to ${fmtCash(UPKEEP_BUSY)}/hour running, billed hourly from the treasury.`);
     const stopped = f.lines.filter((l) => l.paused != null).length;
     const notes = [kpis, ind, costs];
-    if (stopped) notes.push(mk("p", "co-note neg", `${stopped} line${stopped === 1 ? " is" : "s are"} stopped: the treasury couldn't pay upkeep. Add Cash to the treasury on the Stocks tab and they pick up where they left off.`));
+    if (stopped) notes.push(mk("p", "co-note neg", `${stopped} line${stopped === 1 ? " is" : "s are"} stopped: the treasury couldn't pay upkeep. ${iControl() ? "Add Cash to the treasury on the Stocks tab" : "Once the treasury has money again,"} and they pick up where they left off.`));
     const striking = staffOf(f).filter((s) => s.striking).length;
     if (striking) notes.push(mk("p", "co-note neg", `${striking} permanent employee${striking === 1 ? " is" : "s are"} on strike until a payday works.`));
     const who = mk("p", "co-note", iControl()

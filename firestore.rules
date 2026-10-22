@@ -64,7 +64,8 @@ service cloud.firestore {
         || (entry == 'starting-cash' && d.kind == 'grant' && d.amount == 1000000)
         || (d.kind in ['founded', 'offering', 'deposit']
           && d.keys().hasOnly(['kind', 'asset', 'amount', 'qty', 'price', 'at'])
-          && d.at == request.time);
+          && d.at == request.time
+          && (d.kind != 'deposit' || getAfter(/databases/$(database)/documents/companies/$(d.asset)).data.controller == uid));
     }
     function tradeEntry(entry) {
       let d = request.resource.data;
