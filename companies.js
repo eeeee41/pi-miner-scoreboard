@@ -141,18 +141,21 @@ const Companies = (() => {
       if (hours < 1) return null;
       const next = d.lastPayoutAt + hours * HOUR;
       const paidHours = Math.min(hours, MAX_CATCHUP_HOURS);
-      const due = d.dividendPerHour * paidHours;
-      if (!due || due > d.treasury) { tx.update(ref, { lastPayoutAt: next }); return 0; }
+      // Pay as many of the missed hours as the treasury can cover; hours it can't cover are skipped
+      const affordable = d.dividendPerHour ? Math.min(paidHours, Math.floor(d.treasury / d.dividendPerHour)) : 0;
+      const due = d.dividendPerHour * affordable;
+      const report = (amount) => ({ at: next, hours, paidHours: affordable, amount, perHour: d.dividendPerHour, treasury: d.treasury - amount });
+      if (!due) { tx.update(ref, { lastPayoutAt: next, lastPayout: report(0) }); return 0; }
       let paid = 0;
       for (const h of payees) {
         const amt = Math.floor((due * h.shares) / d.shares);
         if (amt <= 0) continue;
         tx.update(userRef(h.uid), { cash: inc(amt) });
         tx.set(userRef(h.uid).collection("history").doc(`div-${c.ticker}-${next}`),
-          { kind: "dividend", asset: c.ticker, amount: amt, hours: paidHours, at: now() });
+          { kind: "dividend", asset: c.ticker, amount: amt, hours: affordable, at: now() });
         paid += amt;
       }
-      tx.update(ref, { treasury: d.treasury - paid, lastPayoutAt: next });
+      tx.update(ref, { treasury: d.treasury - paid, lastPayoutAt: next, lastPayout: report(paid) });
       return paid;
     });
   }
@@ -248,11 +251,24 @@ const Companies = (() => {
     const note = mk("p", "co-note");
     if (c.dividendPerHour && c.treasury < c.dividendPerHour) note.textContent = "The treasury can't cover the next hour's dividend, so it will be skipped until someone adds Cash.";
     else if (c.dividendPerHour) note.textContent = `Next payout in about ${mins} min (paid when anyone has the game open).`;
+    if (c.dividendPerHour) note.textContent += " Wages and line upkeep come out of the treasury first.";
+    // What happened at the last payout
+    const lp = c.lastPayout;
+    const last = mk("p", "co-note" + (lp && lp.paidHours < lp.hours ? " neg" : ""));
+    if (lp) {
+      const when = new Date(lp.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      const skipped = lp.hours - lp.paidHours;
+      last.textContent = lp.paidHours
+        ? `Last payout (${when}): ${fmtCash(lp.amount)} for ${lp.paidHours} hour${lp.paidHours === 1 ? "" : "s"}${skipped ? `. ${skipped} more hour${skipped === 1 ? " was" : "s were"} skipped: the treasury only had enough for ${lp.paidHours}` : ""}.`
+        : lp.perHour
+          ? `Last payout (${when}) was skipped: the treasury had ${fmtCash(lp.treasury)}, less than one hour's ${fmtCash(lp.perHour)} dividend.`
+          : `Last payout (${when}): nothing, because no dividend was set.`;
+    }
 
     const trade = mk("button", "btn-primary buy", `Trade ${c.ticker} shares on the exchange`);
     trade.addEventListener("click", () => Economy.openMarket(c.ticker));
 
-    const sections = [head, ctl, kpis, note, trade];
+    const sections = [head, ctl, kpis, note, ...(lp ? [last] : []), trade];
 
     // Share offering
     if (c.offerLeft > 0 && c.offerPrice > 0) {

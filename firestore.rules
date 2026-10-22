@@ -293,7 +293,8 @@ service cloud.firestore {
     function payout() {
       let c = request.resource.data;
       let was = resource.data;
-      return changed().hasOnly(['treasury', 'lastPayoutAt'])
+      return changed().hasOnly(['treasury', 'lastPayoutAt', 'lastPayout'])
+        && (!('lastPayout' in c) || c.lastPayout is map)
         && c.lastPayoutAt is int && c.lastPayoutAt > was.lastPayoutAt
         && (c.lastPayoutAt - was.lastPayoutAt) % 3600000 == 0
         && c.lastPayoutAt <= request.time.toMillis()
