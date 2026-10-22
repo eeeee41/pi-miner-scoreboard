@@ -216,7 +216,7 @@ service cloud.firestore {
         allow create, update: if signedIn() && doc == 'main'
           && get(/databases/$(database)/documents/companies/$(ticker)).data.controller == request.auth.uid
           && request.resource.data.keys().hasOnly(['inventory', 'lines', 'carsSold', 'revenue', 'research', 'project',
-                                                    'staff', 'wagesPaidTo', 'news', 'updatedAt'])
+                                                    'staff', 'wagesPaidTo', 'news', 'upkeepPaidTo', 'settledAt', 'updatedAt'])
           && (!('staff' in request.resource.data) || (request.resource.data.staff is list && request.resource.data.staff.size() <= 40))
           && request.resource.data.inventory is map
           && request.resource.data.lines is list && request.resource.data.lines.size() <= 10
@@ -321,6 +321,19 @@ service cloud.firestore {
     function newLastPrice() {
       return changed().hasOnly(['lastPrice'])
         && request.resource.data.lastPrice is int && request.resource.data.lastPrice > 0;
+    }
+
+    // ---------------- Everyday buyers ----------------
+    // Game-wide demand for each consumer product: recent sales (`load`, fading over time) and when it
+    // was last updated. Any player's factory updates it as it sells.
+    match /demand/{item} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && item in ['gasoline', 'power', 'bread', 'canned', 'burger', 'phone', 'computer', 'car', 'clothing', 'shoes', 'toys', 'app', 'cloud', 'account', 'insurance']
+        && request.resource.data.keys().hasOnly(['load', 'at'])
+        && request.resource.data.load is number && request.resource.data.load >= 0
+        && request.resource.data.at is int && request.resource.data.at <= request.time.toMillis() + 60000;
+      allow delete: if false;
     }
 
     // ---------------- Marketplace (goods) ----------------

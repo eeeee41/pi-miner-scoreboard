@@ -121,6 +121,25 @@ const Factory = (() => {
   const GOODS = Object.keys(ITEMS).filter((k) => !(RECIPES[k] && RECIPES[k].sellsFor));
   const SUPPLIER_MARKUP = 1.6, WHOLESALE = 0.5;
 
+  // Everyday buyers only want so much. Each product has a game-wide appetite (what about 20 plain
+  // lines make in an hour), shared by every company that sells it. Recent sales across the game
+  // (fading over about an hour) push the price down, to 30% of full price at the most.
+  const DEMAND_LINES = 20, PRICE_FLOOR = 0.3, DEMAND_TAU = 3600000;
+  const PRODUCTS = Object.keys(RECIPES).filter((k) => RECIPES[k].sellsFor);
+  const demandOf = (k) => Math.round((DEMAND_LINES * 3600) / RECIPES[k].secs);       // units an hour
+  const loadAt = (d, t) => (d && d.load ? d.load * Math.exp(-Math.max(0, t - (d.at || 0)) / DEMAND_TAU) : 0);
+  const priceMult = (load, k) => Math.max(PRICE_FLOOR, 1 - ((1 - PRICE_FLOOR) * load) / demandOf(k));
+  // The price multiplier summed over n units sold one after another, starting from `load`
+  function sellMult(load, n, k) {
+    const D = demandOf(k);
+    const F = (x) => (x <= D ? x - ((1 - PRICE_FLOOR) * x * x) / (2 * D) : (D * (1 + PRICE_FLOOR)) / 2 + PRICE_FLOOR * (x - D));
+    return F(load + n) - F(load);
+  }
+
+  // Line upkeep, billed every hour from the treasury: $20 for an hour sitting idle, $100 for an
+  // hour running the whole time, and in between by how long it ran.
+  const UPKEEP_IDLE = 2000, UPKEEP_BUSY = 10000;
+
   // Research: real-time projects paid from the treasury, one at a time per company
   const RESEARCH = {
     robots1: { name: "Robot arms",              cost: 200000,  hours: 0.5, needs: null,      does: "Lets you fit robot arms to production lines: 1.5× faster" },
@@ -165,14 +184,14 @@ const Factory = (() => {
     researcher: { name: "Researcher",  base: 2000, does: (s) => `+${10 * s}% research speed` },
     sales:      { name: "Salesperson", base: 1200, does: (s) => `+${2 * s}% on everything sold to everyday buyers` },
     manager:    { name: "Manager",     base: 3000, does: (s) => `boosts every other employee by ${5 * s}%` },
-    glitch:     { name: "Glitch",      base: 0,    does: (s) => `works every job at once: line speed, research, sales and managing (skill ${s}), and his line makes 5× as much` }
+    glitch:     { name: "Glitch",      base: 0,    does: (s) => `works every job at once: line speed, research, sales and managing (skill ${s}), and his line makes 5× as much. Can't quit; goes on strike if unpaid` }
   };
   // Hard-coded staff: always on the payroll of these companies, for free, and can't be let go or trained
   const FIXED_STAFF = {
     // Eighteen MissingNo.s: the original plus #2–#18
     TSLA: ["", ...Array.from({ length: 17 }, (_, i) => i + 2)].map((n) => ({
       id: n ? `missingno${n}` : "missingno", name: n ? `MissingNo. #${n}` : "MissingNo.",
-      role: "glitch", skill: 5, wage: 0, line: null, fixed: true, outputMult: 5
+      role: "glitch", skill: 5, wage: 10000, line: null, fixed: true, outputMult: 5
     }))
   };
   const POOL_MS = 5 * 60 * 1000;      // a new batch of candidates every 5 minutes
@@ -198,11 +217,13 @@ const Factory = (() => {
   }
 
   const staffOf = (f) => f.staff || [];
+  // Staff on strike (unpaid permanent staff) are on the books but do nothing
+  const active = (f) => staffOf(f).filter((s) => !s.striking);
   const is = (s, role) => s.role === role || s.role === "glitch";   // a glitch counts as every role
-  const managerBoost = (f) => 1 + staffOf(f).filter((s) => is(s, "manager")).reduce((a, s) => a + 0.05 * s.skill, 0);
-  const workersOn = (f, line) => staffOf(f).filter((s) => is(s, "worker") && s.line === line.id);
+  const managerBoost = (f) => 1 + active(f).filter((s) => is(s, "manager")).reduce((a, s) => a + 0.05 * s.skill, 0);
+  const workersOn = (f, line, all = false) => (all ? staffOf(f) : active(f)).filter((s) => is(s, "worker") && s.line === line.id);
   // Units that come off a line for each unit queued (MissingNo.'s line makes 5)
-  const outMult = (line, f) => staffOf(f).filter((s) => s.line === line.id && s.outputMult).reduce((a, s) => a * s.outputMult, 1);
+  const outMult = (line, f) => active(f).filter((s) => s.line === line.id && s.outputMult).reduce((a, s) => a * s.outputMult, 1);
   // Make sure a company's hard-coded staff are on its books
   function addFixedStaff(f, ticker) {
     for (const p of FIXED_STAFF[ticker] || []) {
@@ -215,11 +236,16 @@ const Factory = (() => {
   const lineMult = (line, f) =>
     ROBOTS[line.robots || 0].mult * (1 + workersOn(f, line).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f));
   const unitMs = (line, f) => (RECIPES[line.recipe].secs * 1000) / lineMult(line, f);
-  const researchSpeed = (f) => 1 + staffOf(f).filter((s) => is(s, "researcher")).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f);
+  const researchSpeed = (f) => 1 + active(f).filter((s) => is(s, "researcher")).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f);
   // Salespeople raise what everyday buyers pay (up to +50%)
-  const salesBonus = (f) => Math.min(0.5, staffOf(f).filter((s) => is(s, "sales")).reduce((a, s) => a + 0.02 * s.skill, 0) * managerBoost(f));
+  const salesBonus = (f) => Math.min(0.5, active(f).filter((s) => is(s, "sales")).reduce((a, s) => a + 0.02 * s.skill, 0) * managerBoost(f));
   const salePrice = (f, k) => Math.round(RECIPES[k].sellsFor * (1 + salesBonus(f)));
-  const payrollPerHour = (f) => staffOf(f).reduce((a, s) => a + s.wage, 0);
+  const wagesOf = (list) => list.reduce((a, s) => a + s.wage, 0);
+  const payrollPerHour = (f) => wagesOf(staffOf(f));
+  // What everyday buyers pay for one more unit right now, given recent sales across the game
+  const priceNow = (f, k, dem, now = Date.now()) => Math.round(salePrice(f, k) * priceMult(loadAt(dem && dem[k], now), k));
+  const lineCostNow = (l) => (l.queued && l.startedAt ? UPKEEP_BUSY : UPKEEP_IDLE);
+  const builtAt = (l) => parseInt(l.id, 36) || 0;
 
   // Change something that affects speed without losing progress: every running unit and the
   // research project keep the same percent done and carry on at the new speed.
@@ -235,31 +261,99 @@ const Factory = (() => {
     }
   }
 
-  // Pay every whole hour since the last payday. If the treasury runs short, the best-paid quit first.
+  // Pay every whole hour since the last payday. If the treasury runs short, regular staff quit,
+  // best-paid first; permanent staff can't quit, so the ones it can't pay go on strike until a payday works.
   function payroll(f, now, treasury) {
     const hourNow = Math.floor(now / HOUR) * HOUR;
     if (!staffOf(f).length) { f.wagesPaidTo = hourNow; return treasury; }
     const from = f.wagesPaidTo || hourNow;
     const hours = Math.min(168, Math.floor((now - from) / HOUR));
+    const note = (msg) => { f.news = [msg, ...(f.news || [])].slice(0, 8); };
     for (let h = 0; h < hours && f.staff.length; h++) {
-      if (treasury < payrollPerHour(f)) {
-        rebase(f, now, () => {
-          while (f.staff.length && treasury < payrollPerHour(f)) {
-            const top = f.staff.reduce((a, s) => (s.wage > a.wage ? s : a));
-            f.staff = f.staff.filter((s) => s !== top);
-            f.news = [`${top.name} (${ROLES[top.role].name.toLowerCase()}) quit: the treasury couldn't pay their wage`, ...(f.news || [])].slice(0, 8);
-          }
-        });
+      if (treasury >= payrollPerHour(f)) {
+        if (f.staff.some((s) => s.striking)) {
+          rebase(f, now, () => f.staff.forEach((s) => { delete s.striking; }));
+          note("Payday worked: everyone on strike is back at work");
+        }
+        treasury -= payrollPerHour(f);
+        continue;
       }
-      treasury -= payrollPerHour(f);
+      rebase(f, now, () => {
+        const regular = () => f.staff.filter((s) => !s.fixed);
+        while (regular().length && treasury < wagesOf(regular())) {
+          const top = regular().reduce((a, s) => (s.wage > a.wage ? s : a));
+          f.staff = f.staff.filter((s) => s !== top);
+          note(`${top.name} (${ROLES[top.role].name.toLowerCase()}) quit: the treasury couldn't pay their wage`);
+        }
+        let left = treasury - wagesOf(regular()), struck = 0;
+        for (const s of f.staff.filter((x) => x.fixed)) {
+          const strike = left < s.wage;
+          if (!strike) left -= s.wage;
+          if (strike && !s.striking) struck++;
+          if (strike) s.striking = true; else delete s.striking;
+        }
+        if (struck) note(`${struck} permanent employee${struck === 1 ? "" : "s"} went on strike: the treasury couldn't pay them`);
+      });
+      treasury -= wagesOf(f.staff.filter((s) => !s.striking));
     }
     f.wagesPaidTo = hours ? from + hours * HOUR : from;
     if (now - f.wagesPaidTo >= 168 * HOUR) f.wagesPaidTo = hourNow;   // more than a week behind: forgive the rest
     return treasury;
   }
 
+  // Running time, split into finished hours (billed at the next upkeep) and the hour under way
+  function addBusy(line, a, b, hourNow) {
+    if ((line.busyHour || 0) < hourNow) {
+      line.busyDone = (line.busyDone || 0) + (line.busyNow || 0);
+      line.busyNow = 0;
+      line.busyHour = hourNow;
+    }
+    if (!(b > a)) return;
+    line.busyDone = (line.busyDone || 0) + Math.max(0, Math.min(b, hourNow) - a);
+    line.busyNow = (line.busyNow || 0) + Math.max(0, b - Math.max(a, hourNow));
+  }
+
+  // Bill line upkeep for every whole hour since the last bill. If the treasury can't cover it,
+  // it pays what it has and every running line stops where it is until there's money again.
+  function lineUpkeep(f, now, treasury) {
+    const hourNow = Math.floor(now / HOUR) * HOUR;
+    if (!f.upkeepPaidTo) { f.upkeepPaidTo = hourNow; return treasury; }
+    const hours = Math.floor((hourNow - f.upkeepPaidTo) / HOUR);
+    if (hours <= 0) return treasury;
+    let cost = 0;
+    for (const l of f.lines) {
+      const since = Math.max(f.upkeepPaidTo, Math.ceil(builtAt(l) / HOUR) * HOUR);   // whole hours it existed
+      const idleHours = Math.max(0, Math.min(hours, (hourNow - since) / HOUR));
+      const busy = Math.min(l.busyDone || 0, hours * HOUR);
+      cost += Math.round(UPKEEP_IDLE * idleHours + ((UPKEEP_BUSY - UPKEEP_IDLE) * busy) / HOUR);
+      l.busyDone = 0;
+    }
+    f.upkeepPaidTo = hourNow;
+    if (cost <= treasury) return treasury - cost;
+    let stopped = 0;
+    for (const l of f.lines) {
+      if (!l.queued || !l.startedAt) continue;
+      l.paused = Math.min(0.999, Math.max(0, (now - l.startedAt) / unitMs(l, f)));
+      l.startedAt = null;
+      stopped++;
+    }
+    f.news = [`The treasury couldn't pay ${fmtCash(cost)} of line upkeep${stopped ? `, so ${stopped} line${stopped === 1 ? "" : "s"} stopped until there's money again` : ""}`, ...(f.news || [])].slice(0, 8);
+    return 0;
+  }
+
+  // Lines stopped for unpaid upkeep pick up where they left off once the treasury has money
+  function resume(f, now, treasury) {
+    if (treasury <= 0) return;
+    for (const l of f.lines) {
+      if (l.paused == null) continue;
+      if (l.queued) l.startedAt = now - l.paused * unitMs(l, f);
+      delete l.paused;
+    }
+  }
+
   let fb = null, db = null, user = null, unsubs = [], factoryUnsub = null;
-  const st = { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0 };
+  const st = { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0, demand: {}, demandKey: "" };
+  let demandUnsubs = [];
 
   /* ---------- helpers ---------- */
   const g = (id) => document.getElementById(id);
@@ -273,12 +367,13 @@ const Factory = (() => {
   const errText = (e) => Economy.errText(e);
   const companyRef = (t) => db.collection("companies").doc(t);
   const factoryRef = (t) => companyRef(t).collection("factory").doc("main");
-  const blank = () => ({ inventory: {}, lines: [], carsSold: 0, revenue: 0, research: {}, project: null, staff: [], wagesPaidTo: null, news: [] });
+  const blank = () => ({ inventory: {}, lines: [], carsSold: 0, revenue: 0, research: {}, project: null, staff: [], wagesPaidTo: null, news: [], upkeepPaidTo: null, settledAt: null });
   // Every writer of the factory doc goes through this, so no field is ever dropped
   const clone = (f) => JSON.parse(JSON.stringify({
     inventory: f.inventory || {}, lines: f.lines || [], carsSold: f.carsSold || 0, revenue: f.revenue || 0,
     research: f.research || {}, project: f.project || null,
-    staff: f.staff || [], wagesPaidTo: f.wagesPaidTo || null, news: f.news || []
+    staff: f.staff || [], wagesPaidTo: f.wagesPaidTo || null, news: f.news || [],
+    upkeepPaidTo: f.upkeepPaidTo || null, settledAt: f.settledAt || null
   }));
   const company = () => st.companies.find((c) => c.ticker === st.ticker);
   const iControl = () => { const c = company(); return !!(c && user && c.controller === user.uid); };
@@ -294,35 +389,55 @@ const Factory = (() => {
   // "→ 2 bushels of wheat · sold instantly for $9.00"
   const outText = (k, n) => n === 1 ? `1 ${ITEMS[k].one}` : qtyName(k, n);
 
-  // Count every unit finished by `now`. Things everyday buyers want are sold on the spot; returns the Cash they brought in.
-  function settle(f, now) {
+  // Count every unit finished by `now`. Things everyday buyers want are sold the moment each one is
+  // made, at the price recent sales across the game allow; `dem` holds that shared demand and is
+  // updated in place. Also notes how long each line ran, for upkeep. Returns the Cash the sales brought in.
+  function settle(f, now, dem = {}) {
     let income = 0;
     if (f.project && now >= f.project.endsAt) {          // finished research
       f.research[f.project.key] = true;
       f.project = null;
     }
+    const from = f.settledAt || now, hourNow = Math.floor(now / HOUR) * HOUR;
+    const sales = [];
     for (const line of f.lines) {
-      if (!line.queued || !line.startedAt) continue;
+      if (!line.queued || !line.startedAt) { addBusy(line, 0, 0, hourNow); continue; }
       const per = unitMs(line, f);
+      addBusy(line, Math.max(from, line.startedAt), Math.min(now, line.startedAt + line.queued * per), hourNow);
       const n = Math.min(line.queued, Math.floor((now - line.startedAt) / per));
       if (n <= 0) continue;
-      const out = n * yieldOf(line.recipe, f.research) * outMult(line, f);   // units that actually come off the line
-      line.queued -= n;
-      line.made = (line.made || 0) + out;
-      line.startedAt = line.queued ? line.startedAt + n * per : null;
+      const each = yieldOf(line.recipe, f.research) * outMult(line, f);   // units that come off the line per run
       if (RECIPES[line.recipe].sellsFor) {
-        const cash = out * salePrice(f, line.recipe);
-        f.carsSold += out;
-        f.revenue += cash;
-        income += cash;
+        for (let i = 1; i <= n; i++) sales.push({ t: Math.round(line.startedAt + i * per), k: line.recipe, n: each });
+        f.carsSold += n * each;
       } else {
-        f.inventory[line.recipe] = (f.inventory[line.recipe] || 0) + out;
+        f.inventory[line.recipe] = (f.inventory[line.recipe] || 0) + n * each;
       }
+      line.queued -= n;
+      line.made = (line.made || 0) + n * each;
+      line.startedAt = line.queued ? line.startedAt + n * per : null;
     }
+    // Sell in the order things were made, so recent sales by anyone keep pushing the price down
+    sales.sort((x, y) => x.t - y.t);
+    for (const e of sales) {
+      const d = dem[e.k] || (dem[e.k] = { load: 0, at: 0 });
+      d.load = loadAt(d, e.t);
+      d.at = Math.max(d.at || 0, e.t);
+      const cash = Math.round(salePrice(f, e.k) * sellMult(d.load, e.n, e.k));
+      d.load += e.n;
+      d.touched = true;
+      f.revenue += cash;
+      income += cash;
+    }
+    f.settledAt = now;
     return income;
   }
 
-  // Every factory change: re-read, catch up on finished units, apply the change, save.
+  const demandRef = (k) => db.collection("demand").doc(k);
+  const sig = (f) => JSON.stringify({ ...f, settledAt: null,
+    lines: f.lines.map(({ busyDone, busyNow, busyHour, ...l }) => l) });
+
+  // Every factory change: re-read, catch up on finished units and bills, apply the change, save.
   async function act(change, t = st.ticker) {
     const uid = user.uid;
     return db.runTransaction(async (tx) => {
@@ -331,15 +446,24 @@ const Factory = (() => {
       const snap = await tx.get(factoryRef(t));
       const f = addFixedStaff(snap.exists ? clone(snap.data()) : blank(), t);
       const before = JSON.stringify(snap.exists ? clone(snap.data()) : blank());
+      // Running time is worked out again from the last save, so it alone isn't worth a write
+      // The shared demand for whatever these lines might sell
+      const selling = [...new Set(f.lines.filter((l) => l.queued && RECIPES[l.recipe].sellsFor).map((l) => l.recipe))];
+      const dem = {};
+      for (const k of selling) { const d = await tx.get(demandRef(k)); dem[k] = d.exists ? { ...d.data() } : { load: 0, at: 0 }; }
       const now = Date.now();
-      let treasury = c.treasury + settle(f, now);
+      let treasury = c.treasury + settle(f, now, dem);
+      treasury = lineUpkeep(f, now, treasury);
       treasury = payroll(f, now, treasury);
-      if (!change && JSON.stringify(f) === before && treasury === c.treasury) return "";   // nothing to save
+      resume(f, now, treasury);
       const res = change ? change(f, treasury, now, c) || {} : {};
       if (res.treasury != null) treasury = res.treasury;
+      resume(f, now, treasury);
+      if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury) return "";   // nothing to save
       if (treasury < 0) throw new Error(`The treasury only has ${fmtCash(c.treasury)}.`);
       tx.set(factoryRef(t), { ...f, updatedAt: fb.firestore.FieldValue.serverTimestamp() });
       if (treasury !== c.treasury) tx.update(companyRef(t), { treasury });
+      for (const [k, d] of Object.entries(dem)) if (d.touched) tx.set(demandRef(k), { load: d.load, at: Math.round(d.at) });
       return res.msg || "";
     });
   }
@@ -400,7 +524,7 @@ const Factory = (() => {
     if (!line.queued) return { msg: "That line's queue is already empty." };
     for (const [k, q] of Object.entries(r.inputs)) f.inventory[k] = (f.inventory[k] || 0) + q * line.queued;
     const n = line.queued;
-    line.queued = 0; line.startedAt = null;
+    line.queued = 0; line.startedAt = null; delete line.paused;
     return { msg: `✓ Cleared ${n.toLocaleString()} unmade units from line ${i + 1}; their materials are back in the warehouse.` };
   });
 
@@ -439,7 +563,7 @@ const Factory = (() => {
     const s = f.staff.find((x) => x.id === id);
     if (!s) throw new Error("That person no longer works here.");
     const line = f.lines.find((l) => l.id === lineId);
-    if (line && workersOn(f, line).filter((x) => x.id !== id).length >= MAX_WORKERS_PER_LINE)
+    if (line && workersOn(f, line, true).filter((x) => x.id !== id).length >= MAX_WORKERS_PER_LINE)
       throw new Error(`A line takes at most ${MAX_WORKERS_PER_LINE} workers.`);
     if (!is(s, "worker")) throw new Error(`${s.name} doesn't work on lines.`);
     rebase(f, now, () => { s.line = line ? line.id : null; });
@@ -506,8 +630,30 @@ const Factory = (() => {
   // What the factory looks like right now, counting units finished since the last save.
   function projected() {
     const f = addFixedStaff(clone(st.factory || blank()), st.ticker);
-    const income = settle(f, Date.now());
-    return { f, income };
+    const dem = JSON.parse(JSON.stringify(st.demand));
+    const income = settle(f, Date.now(), dem);
+    return { f, income, dem };
+  }
+
+  // Live game-wide demand for everything this company sells or could sell
+  function watchDemand() {
+    const c = company();
+    const keys = [...new Set([...(c ? recipesFor(c.industry) : []), ...((st.factory && st.factory.lines) || []).map((l) => l.recipe)])]
+      .filter((k) => RECIPES[k] && RECIPES[k].sellsFor).sort();
+    const key = keys.join(",");
+    if (!db || !user || key === st.demandKey) return;
+    demandUnsubs.forEach((u) => u());
+    st.demandKey = key;
+    st.demand = {};
+    demandUnsubs = keys.map((k) => demandRef(k).onSnapshot((s) => {
+      if (s.exists) st.demand[k] = s.data(); else delete st.demand[k];
+      renderSummary(); renderLines(); renderRecipes();
+    }, () => {}));
+  }
+  // "$187.50 now (75% of full price: a lot sold lately)"
+  function priceText(f, k, dem) {
+    const now = Date.now(), m = priceMult(loadAt(dem[k], now), k);
+    return `${fmtCash(priceNow(f, k, dem, now))}${m < 0.995 ? ` (${Math.round(m * 100)}% of full price: a lot sold across the game lately)` : ""}`;
   }
 
   function renderPicker() {
@@ -541,15 +687,25 @@ const Factory = (() => {
     const ind = mk("p", "co-note", mine.length
       ? `${c.ticker} is ${aAn(c.industry)} ${c.industry.toLowerCase()} company. Its lines can make ${mine.map((k) => ITEMS[k].name.toLowerCase()).join(", ")}.`
       : `${c.ticker}'s industry (${c.industry}) has nothing to make yet.`);
+    const perHour = f.lines.reduce((a, l) => a + lineCostNow(l), 0);
+    const nextBill = Math.max(1, Math.ceil(((f.upkeepPaidTo || Math.floor(Date.now() / HOUR) * HOUR) + HOUR - Date.now()) / 60000));
+    const costs = mk("p", "co-note", f.lines.length
+      ? `Line upkeep: ${fmtCash(UPKEEP_IDLE)}/hour for each idle line, up to ${fmtCash(UPKEEP_BUSY)}/hour for each line running the whole hour, billed hourly from the treasury. Right now that's about ${fmtCash(perHour)}/hour${staffOf(f).length ? `, plus ${fmtCash(payrollPerHour(f))}/hour in wages` : ""} · next bill in about ${nextBill} min.`
+      : `Each line costs ${fmtCash(UPKEEP_IDLE)}/hour sitting idle and up to ${fmtCash(UPKEEP_BUSY)}/hour running, billed hourly from the treasury.`);
+    const stopped = f.lines.filter((l) => l.paused != null).length;
+    const notes = [kpis, ind, costs];
+    if (stopped) notes.push(mk("p", "co-note neg", `${stopped} line${stopped === 1 ? " is" : "s are"} stopped: the treasury couldn't pay upkeep. Add Cash to the treasury on the Stocks tab and they pick up where they left off.`));
+    const striking = staffOf(f).filter((s) => s.striking).length;
+    if (striking) notes.push(mk("p", "co-note neg", `${striking} permanent employee${striking === 1 ? " is" : "s are"} on strike until a payday works.`));
     const who = mk("p", "co-note", iControl()
       ? "You control this company, so you run its factory."
       : `Only ${c.controllerName}, who controls ${c.ticker}, can run this factory. You can look around.`);
-    box.replaceChildren(kpis, ind, who);
+    box.replaceChildren(...notes, who);
   }
 
   function renderLines() {
     const box = g("fLines");
-    const { f } = projected();
+    const { f, dem } = projected();
     const can = iControl(), c = company();
     const allowed = c ? recipesFor(c.industry) : [];
     g("fBuild").classList.toggle("hidden", !can || f.lines.length >= MAX_LINES);
@@ -587,7 +743,7 @@ const Factory = (() => {
         ? Object.entries(line.inputs).map(([k, n]) => qtyName(k, n)).join(" + ")
         : inputsText(line.recipe, f.research);
       const per = yieldOf(line.recipe, f.research) * om;
-      const recipe = mk("div", "f-recipe-text", `${inputs || `nothing (${r.how})`} → ${outText(line.recipe, per)} · ${fmtDur(unitMs(line, f) / 1000)} each run${r.sellsFor ? ` · sold instantly for ${fmtCash(salePrice(f, line.recipe))} each` : ""}`);
+      const recipe = mk("div", "f-recipe-text", `${inputs || `nothing (${r.how})`} → ${outText(line.recipe, per)} · ${fmtDur(unitMs(line, f) / 1000)} each run${r.sellsFor ? ` · everyday buyers pay ${priceText(f, line.recipe, dem)} each` : ""}`);
       if (c && !allowed.includes(line.recipe)) recipe.append(mk("span", "neg", ` · ${c.industry} companies can't make this any more: let the queue finish, then switch the line`));
       const bar = mk("div", "progress"); const fill = mk("div"); fill.dataset.line = i; bar.append(fill);
       const status = mk("div", "f-status"); status.dataset.line = i;
@@ -638,12 +794,17 @@ const Factory = (() => {
       const per = unitMs(line, f);
       if (!line.queued) {
         fill.style.width = "0%";
-        status.textContent = "Idle. Queue some units to start.";
+        status.textContent = `Idle (upkeep ${fmtCash(UPKEEP_IDLE)}/hour). Queue some units to start.`;
+        return;
+      }
+      if (!line.startedAt) {
+        fill.style.width = Math.min(100, (line.paused || 0) * 100) + "%";
+        status.textContent = `Stopped: the treasury couldn't pay upkeep. ${line.queued.toLocaleString()} still in the queue.`;
         return;
       }
       const into = now - line.startedAt;
       fill.style.width = Math.min(100, (into / per) * 100) + "%";
-      status.textContent = `${line.queued.toLocaleString()} in the queue · next one in ${fmtDur((per - into) / 1000)} · all done in ${fmtDur((line.queued * per - into) / 1000)}`;
+      status.textContent = `Running (upkeep ${fmtCash(UPKEEP_BUSY)}/hour) · ${line.queued.toLocaleString()} in the queue · next one in ${fmtDur((per - into) / 1000)} · all done in ${fmtDur((line.queued * per - into) / 1000)}`;
     });
   }
 
@@ -689,7 +850,7 @@ const Factory = (() => {
     const sum = g("fPayroll");
     sum.replaceChildren(mk("p", "co-note", f.staff.length
       ? `${f.staff.length} of ${MAX_STAFF} employees · ${fmtCash(pay)}/hour in wages, paid hourly from the treasury · next payday in about ${nextPay} min` +
-        (c && c.treasury < pay ? " · the treasury can't cover the next payday, so the best-paid will quit" : "")
+        (c && c.treasury < pay ? " · the treasury can't cover the next payday: regular staff quit, best-paid first, and permanent staff go on strike" : "")
       : `No employees yet. Workers speed up lines, researchers speed up the lab, salespeople raise car prices, and managers boost everyone.`));
     for (const n of f.news || []) sum.append(mk("p", "co-note neg", n));
 
@@ -718,7 +879,8 @@ const Factory = (() => {
           sel.addEventListener("change", (e) => run(() => assign(sf.id, e.target.value || null)));
           acts.append(sel);
         }
-        if (sf.fixed) acts.append(mk("span", "chip robo", "permanent · works for free"));
+        if (sf.fixed) acts.append(mk("span", "chip robo", "permanent · can't quit"));
+        if (sf.striking) acts.append(mk("span", "chip neg", "on strike: unpaid"));
         if (sf.skill < 5 && !sf.fixed) {
           const t = mk("button", "btn-ghost", `Train · ${fmtCash(trainCost(sf.skill))}`);
           t.addEventListener("click", () => run(() => train(sf.id)));
@@ -794,7 +956,7 @@ const Factory = (() => {
   }
 
   function renderRecipes() {
-    const pf = st.factory ? projected().f : blank();
+    const { f: pf, dem } = st.factory ? projected() : { f: blank(), dem: {} };
     const c = company();
     const keys = c ? recipesFor(c.industry) : [];
     const rows = keys.map((k) => {
@@ -802,7 +964,9 @@ const Factory = (() => {
       const y = yieldOf(k, pf.research);
       const tr = mk("tr");
       tr.append(mk("td", null, ITEMS[k].name), mk("td", null, `${inputsText(k, pf.research)} → ${outText(k, y)}`), mk("td", "num", fmtDur(r.secs)),
-        mk("td", null, r.sellsFor ? `Sold instantly to everyday buyers for ${fmtCash(salePrice(pf, k))} each` : `Kept in the warehouse · worth about ${fmtCash(BASE_VALUE[k])} each`));
+        mk("td", null, r.sellsFor
+          ? `Sold instantly to everyday buyers: ${priceText(pf, k, dem)} each now, up to ${fmtCash(salePrice(pf, k))}. They want about ${demandOf(k).toLocaleString()} an hour across the whole game`
+          : `Kept in the warehouse · worth about ${fmtCash(BASE_VALUE[k])} each`));
       return tr;
     });
     const table = mk("table", "f-table");
@@ -822,10 +986,11 @@ const Factory = (() => {
     g("fRecipes").replaceChildren(
       ...(c ? [mk("p", "co-note", `As ${aAn(c.industry)} ${c.industry.toLowerCase()} company, ${c.ticker} can make:`), wrap] : [mk("div", "empty", "Pick a company to see what it can make.")]),
       mk("p", "co-note", "Anything a recipe needs that you don't make yourself comes from other companies on the Market, or from suppliers: raw materials at their list price, made goods at a 60% markup. Times are for a line without robots or workers; this company's research is already counted."),
+      mk("p", "co-note", "Everyday buyers are shared by every company in the game. The more of something anyone sells, the less buyers pay for the next one, down to 30% of full price; the price climbs back as sales slow down, mostly within an hour."),
       more);
   }
 
-  function renderAll() { renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderStaff(); renderRecipes(); }
+  function renderAll() { watchDemand(); renderPicker(); renderSummary(); renderLines(); renderWarehouse(); renderResearch(); renderStaff(); renderRecipes(); }
 
   function watchFactory(ticker) {
     if (factoryUnsub) factoryUnsub();
@@ -905,7 +1070,9 @@ const Factory = (() => {
       g("staffDrawer").classList.remove("open");
       document.body.classList.remove("staff-open");
     }
-    Object.assign(st, { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0 });
+    demandUnsubs.forEach((u) => u());
+    demandUnsubs = [];
+    Object.assign(st, { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0, demand: {}, demandKey: "" });
     if (g("fMsg")) { setMsg("", ""); renderAll(); }
   }
 
@@ -917,5 +1084,5 @@ const Factory = (() => {
     }
   }
 
-  return { init, signIn, signOut, upkeep, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, BASE_VALUE, supplierPrice, clone, blank, qtyName };
+  return { init, signIn, signOut, upkeep, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, PRODUCTS, BASE_VALUE, supplierPrice, clone, blank, qtyName };
 })();
