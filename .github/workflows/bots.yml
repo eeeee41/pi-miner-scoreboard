@@ -4,7 +4,7 @@ name: Investor bots
 
 on:
   schedule:
-    - cron: "23 * * * *"    # every hour at :23 (GitHub may start it a few minutes late)
+    - cron: "23 */2 * * *"  # every 2 hours at :23 (GitHub may start it a few minutes late); each run costs ~700 reads of the 50,000 free a day
   workflow_dispatch: {}
 
 concurrency:

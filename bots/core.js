@@ -2,7 +2,7 @@
    Pi Miner — investor bots
    ---------------------------------------------------------------------
    Ten bots whose only job is to invest. A scheduled GitHub Actions job
-   (.github/workflows/bots.yml → bots/run.mjs) runs them about once an hour
+   (.github/workflows/bots.yml → bots/run.mjs) runs them every 2 hours
    with Firebase admin access, so they trade even when nobody is online.
    They use the same order books, trades, wallets and shareholdings as
    players, so players trade with them like anyone else.
@@ -53,6 +53,7 @@
   const MAX_STAKE = 0.10;          // never more than 10% of a company
   const MAX_FILLS = 9;             // resting orders filled per trade
   const DEPTH = 10;                // order book rows each bot looks at
+  const BOOK_READ = 20;            // rows of each book read once per run (spare rows for when orders are taken)
   const MAX_RESTING = 4;           // orders each bot leaves on the books
   const AVG_TRADES = 20;
   const LIST_SHARE = 0.1;          // share of its holding a bot lists for sale at once
@@ -150,13 +151,38 @@
       }
     }
 
+    /* ---------- the order books, read once per run ----------
+       The free plan allows 50,000 reads a day, shared with every player, so each book is read once and
+       then kept up to date in memory as the bots cancel, fill and place orders. Every trade still checks
+       the orders it fills inside its transaction, so a stale entry can never cause a bad fill. */
+    const books = new Map();                         // "ASSET:side" → orders, best first
+    const sideOrder = (side) => (x, y) => (side === "buy" ? y.p - x.p : x.p - y.p) || ms(x.createdAt) - ms(y.createdAt);
+    async function readBook(asset, side) {
+      const k = `${asset}:${side}`;
+      if (!books.has(k)) {
+        const s = await book(asset, side).orderBy("p", side === "buy" ? "desc" : "asc").limit(BOOK_READ).get();
+        books.set(k, s.docs.map(asOrder).filter((o) => typeof o.p === "number"));
+      }
+      return books.get(k);
+    }
+    const bookDrop = (asset, side, id, n) => {     // n units of an order filled (or all of it gone)
+      const list = books.get(`${asset}:${side}`);
+      const o = list && list.find((x) => x.id === id);
+      if (!o) return;
+      o.remaining -= n == null ? o.remaining : n;
+      if (o.remaining <= 0) list.splice(list.indexOf(o), 1);
+    };
+    const bookAdd = (asset, side, o) => {
+      const list = books.get(`${asset}:${side}`);
+      if (list) { list.push(o); list.sort(sideOrder(side)); }
+    };
+
     /* ---------- one trade: same steps as a player's order (fill up to 9 resting orders, rest the remainder) ---------- */
     async function trade(b, asset, side, price, qty, rest, ref) {
       const other = side === "buy" ? "sell" : "buy";
       const crosses = (p) => (side === "buy" ? p <= price : p >= price);
       const better = (a, c) => (side === "buy" ? a.p - c.p : c.p - a.p) || ms(a.createdAt) - ms(c.createdAt);
-      const snap = await book(asset, other).orderBy("p", side === "buy" ? "asc" : "desc").limit(DEPTH).get();
-      const opposite = snap.docs.map(asOrder).filter((o) => typeof o.p === "number" && o.uid !== b.id);
+      const opposite = (await readBook(asset, other)).slice(0, DEPTH).filter((o) => o.uid !== b.id);
       // Another bot's order only counts if its price is close to the reference price
       const ok = (o) => !isBot(o.uid) || inBand(o.p, ref);
       // A resting order stops one cent short of any bot order it isn't allowed to trade with
@@ -231,11 +257,12 @@
             if (c.qty) tx.set(holderRef(asset, maker), { uid: maker, name: c.name, shares: inc(c.qty) }, { merge: true });
           }
         }
-        let orderPath = null;
+        let orderPath = null, rested = null;
         if (restQty > 0) {
           const o = book(asset, side).doc();
           tx.set(o, { uid: b.id, name: b.name, side, price, p: price, qty: filled + restQty, remaining: restQty, filled, status: "open", createdAt: now() });
           orderPath = o.path;
+          rested = { ref: o, id: o.id, uid: b.id, name: b.name, side, price, p: price, remaining: restQty, createdAt: { toMillis: () => Date.now() } };
         }
         const wallet = isPi(asset) ? { cash, coins: held } : { cash, coins };
         if (orderPath) wallet.openOrders = FieldValue.arrayUnion(orderPath);
@@ -244,7 +271,12 @@
           tx.set(holderRef(asset, b.id), { uid: b.id, name: b.name, shares: held }, { merge: true });
           if (fills.length && company && company.exists) tx.update(companyRef(asset), { lastPrice: fills[fills.length - 1].o.p });
         }
-        return { filled, value, rest: restQty, price };
+        return { filled, value, rest: restQty, price, fills: fills.map(({ o, n }) => ({ id: o.id, n })), rested };
+      }).then((r) => {
+        // Keep the shared copy of the books in step with what just happened
+        for (const f of r.fills || []) bookDrop(asset, other, f.id, f.n);
+        if (r.rested) bookAdd(asset, side, r.rested);
+        return r;
       });
     }
 
@@ -262,6 +294,7 @@
           const heldSnap = d && !isPi(asset) && d.side === "sell" ? await tx.get(holderRef(asset, b.id)) : null;
           if (!d || d.uid !== b.id || typeof d.p !== "number" || d.remaining <= 0) return;
           was.set(`${asset}:${d.side}`, { price: d.price, untouched: !(d.filled > 0) });
+          bookDrop(asset, d.side, ref.id);
           const me = meSnap.data() || {};
           tx.update(ref, { status: "cancelled", p: FieldValue.delete() });
           if (d.side === "buy") tx.update(userRef(b.id), { cash: (me.cash || 0) + d.remaining * d.price });
@@ -296,8 +329,7 @@
     const companies = (await db.collection("companies").get()).docs.map((d) => d.data()).filter((c) => c && c.shares > 0);
     // Best price on the other side this bot may trade with: players at any price, bots near the reference
     async function top(asset, side, ref, me) {
-      const s = await book(asset, side).orderBy("p", side === "buy" ? "desc" : "asc").limit(DEPTH).get();
-      const o = s.docs.map(asOrder).find((x) => typeof x.p === "number" && x.uid !== me && (!isBot(x.uid) || inBand(x.p, ref)));
+      const o = (await readBook(asset, side)).slice(0, DEPTH + 4).find((x) => x.uid !== me && (!isBot(x.uid) || inBand(x.p, ref)));
       return o ? o.p : null;
     }
     // What players have actually paid lately (trades between two bots don't count)
@@ -332,14 +364,18 @@
     for (const b of bots) {
       const did = [];
       const last = await cancelAll(b);
-      const wallet = () => userRef(b.id).get().then((s) => s.data() || {});
+      // The bot's wallet, read again only after it trades
+      let wc = null;
+      const wallet = async () => wc || (wc = await userRef(b.id).get().then((s) => s.data() || {}));
+      const tradeB = (...a) => trade(b, ...a).finally(() => { wc = null; });
+      const buyOfferingB = (...a) => buyOffering(b, ...a).finally(() => { wc = null; });
       const holding = (t) => holderRef(t, b.id).get().then((s) => (s.exists && s.data().shares) || 0);
       const resting = [];
       const sideTaken = new Map();     // asset → "buy" or "sell" this run: never both
 
       // Keep enough Pi to pay fees: buy some from sellers near Pi's reference price
       if (piRef && ((await wallet()).coins || 0) < FEE_FLOAT) {
-        const r = await trade(b, "PI", "buy", Math.ceil(piRef * BAND_HI), 20, false, piRef);
+        const r = await tradeB("PI", "buy", Math.ceil(piRef * BAND_HI), 20, false, piRef);
         if (r.filled) { did.push(`bought ${r.filled} Pi for fees`); sideTaken.set("PI", "buy"); }
       }
 
@@ -363,7 +399,7 @@
 
         // New shares from the company itself
         if (bid >= 1 && c.offerLeft > 0 && c.offerPrice > 0 && c.offerPrice <= bid && held < cap) {
-          const n = await buyOffering(b, c.ticker, Math.min(cap - held, Math.floor(budget / c.offerPrice)));
+          const n = await buyOfferingB(c.ticker, Math.min(cap - held, Math.floor(budget / c.offerPrice)));
           if (n) { did.push(`bought ${n.toLocaleString()} new ${c.ticker} shares at $${(c.offerPrice / 100).toFixed(2)}`); held += n; sideTaken.set(c.ticker, "buy"); }
         }
         if (c.tradingClosed) continue;
@@ -373,12 +409,12 @@
         if (bid >= 1 && bestAsk != null && bestAsk <= bid && held < cap && sideTaken.get(c.ticker) !== "sell") {
           const qty = Math.min(cap - held, Math.floor(budget / bid));
           if (qty > 0) {
-            const r = await trade(b, c.ticker, "buy", bid, qty, false, ref);
+            const r = await tradeB(c.ticker, "buy", bid, qty, false, ref);
             if (r.filled) { did.push(`bought ${r.filled.toLocaleString()} ${c.ticker} shares`); held += r.filled; sideTaken.set(c.ticker, "buy"); }
           }
         }
         if (held > 0 && bestBid != null && bestBid >= ask && sideTaken.get(c.ticker) !== "buy") {
-          const r = await trade(b, c.ticker, "sell", ask, held, false, ref);
+          const r = await tradeB(c.ticker, "sell", ask, held, false, ref);
           if (r.filled) { did.push(`sold ${r.filled.toLocaleString()} ${c.ticker} shares`); held -= r.filled; sideTaken.set(c.ticker, "sell"); }
         }
         // Orders to leave on the book (best value first)
@@ -397,12 +433,12 @@
         const room = Math.floor(Math.max(0, worth * b.piShare - (w.coins || 0) * piRef) / bid);
         const bestAsk = await top("PI", "sell", piRef, b.id), bestBid = await top("PI", "buy", piRef, b.id);
         if (room > 0 && bestAsk != null && bestAsk <= bid) {
-          const r = await trade(b, "PI", "buy", bid, room, false, piRef);
+          const r = await tradeB("PI", "buy", bid, room, false, piRef);
           if (r.filled) { did.push(`bought ${r.filled.toLocaleString()} Pi`); sideTaken.set("PI", "buy"); }
         }
         const coins = (await wallet()).coins || 0;
         if (coins > 0 && bestBid != null && bestBid >= ask && sideTaken.get("PI") !== "buy") {
-          const r = await trade(b, "PI", "sell", ask, Math.ceil(coins / 2), false, piRef);
+          const r = await tradeB("PI", "sell", ask, Math.ceil(coins / 2), false, piRef);
           if (r.filled) { did.push(`sold ${r.filled.toLocaleString()} Pi`); sideTaken.set("PI", "sell"); }
         }
         const w2 = await wallet();
@@ -416,7 +452,7 @@
       let placed = 0;
       for (const o of resting) {
         if (placed >= MAX_RESTING || !(o.qty > 0)) continue;
-        const r = await trade(b, o.asset, o.side, o.price, o.qty, true, o.ref);
+        const r = await tradeB(o.asset, o.side, o.price, o.qty, true, o.ref);
         if (r.filled) did.push(`${o.side === "buy" ? "bought" : "sold"} ${r.filled.toLocaleString()} ${o.asset === "PI" ? "Pi" : `${o.asset} shares`}`);
         if (r.rest) { placed++; did.push(`left an order to ${o.side} ${r.rest.toLocaleString()} ${o.asset === "PI" ? "Pi" : o.asset} at $${(r.price / 100).toFixed(2)}`); }
       }

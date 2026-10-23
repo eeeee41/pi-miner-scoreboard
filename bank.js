@@ -192,7 +192,7 @@ const Bank = (() => {
     user = null;
     Object.assign(st, { wallet: null, piPrice: null, busy: false });
   }
-  // 5-minute upkeep: add interest and close an underwater loan, free (no fee)
+  // 15-minute upkeep: add interest and close an underwater loan, free (no fee)
   async function upkeep() {
     if (!user || !st.wallet) return;
     const w = st.wallet;

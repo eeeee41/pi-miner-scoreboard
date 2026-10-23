@@ -239,7 +239,7 @@ const Work = (() => {
     user = null;
     Object.assign(st, { wallet: null, board: [], mine: [], busy: false });
   }
-  // 5-minute upkeep: pay out a finished shift
+  // 15-minute upkeep: pay out a finished shift
   async function upkeep() {
     if (user && st.wallet && st.wallet.shift && Date.now() >= st.wallet.shift.endsAt) await endShift(false).catch(() => {});
   }

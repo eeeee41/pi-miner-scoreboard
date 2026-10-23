@@ -22,7 +22,7 @@
      the moment it's made, and the money goes into the treasury.
    • No server runs on the free plan, so output is worked out from the
      clock: whenever the controller's page saves anything (or checks in
-     every 30 s while the factory is open, and on the 5-minute upkeep),
+     every 2 minutes while the factory is open, and on the 15-minute upkeep),
      every unit finished since the last save is counted at once.
    Only the company's controller runs the factory.
    ===================================================================== */
@@ -1369,8 +1369,8 @@ const Factory = (() => {
     setInterval(() => {
       if (!user) return;
       tick();
-      // While the factory tab is open, bank finished units every 30 s
-      if (!g("tab-factory").classList.contains("hidden") && Date.now() - st.lastSettle > 30000 && !st.busy) {
+      // While the factory tab is open, bank finished units every 2 minutes
+      if (!g("tab-factory").classList.contains("hidden") && Date.now() - st.lastSettle > 120000 && !st.busy) {
         st.lastSettle = Date.now();
         settleNow().catch((e) => console.warn("Factory catch-up:", e));
         renderSummary(); renderWarehouse();
@@ -1417,7 +1417,7 @@ const Factory = (() => {
     if (g("fMsg")) { setMsg("", ""); renderAll(); }
   }
 
-  // 5-minute upkeep: bank finished units for every company this player runs
+  // 15-minute upkeep: bank finished units for every company this player runs
   async function upkeep() {
     if (!user) return;
     for (const c of st.companies.filter((x) => x.controller === user.uid)) {

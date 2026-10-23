@@ -26,6 +26,7 @@ const Companies = (() => {
   const MAX_CATCHUP_HOURS = 168;     // a payout covers at most a week of missed hours
   const MAX_PAYEES = 200;            // shareholders paid per payout (Firestore: 500 writes per transaction)
   // Same list as Factory.INDUSTRIES: the industry decides what the company's lines can make
+  let handArmed = null;   // { ticker, uid, at }: the first click of a hand-over, waiting for the second
   const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance", "Security"];
 
   let fb = null, db = null, user = null;
@@ -354,7 +355,7 @@ const Companies = (() => {
         return "✓ Saved.";
       }, "sCtlMsg");
       const cmsg = mk("div", "status"); cmsg.id = "sCtlMsg";
-      sec.append(r1, r2, tariffRow, closeL, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes. Mining, Farming, Energy, and Steel and metals run sites instead of lines: switching to one of those takes the lines down, with their build and robot costs back in the treasury and queued materials back in the warehouse."), save, cmsg);
+      sec.append(r1, r2, tariffRow, closeL, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes. Mining, Farming, Energy, Steel and metals, Software, Retail and Finance run sites instead of lines: switching to one of those takes the lines down, with their build and robot costs back in the treasury and queued materials back in the warehouse."), save, cmsg);
       // Hand control to another shareholder (two clicks, so it can't happen by accident)
       const heirs = st.top.filter((h) => h.shares > 0 && h.uid !== c.controller && h.uid !== "market" && !String(h.uid).startsWith("bot-"));
       const ho = mk("div", "co-sec");
@@ -368,12 +369,23 @@ const Companies = (() => {
         l.append(mk("span", null, "Give control to"), sel);
         const go = mk("button", "btn-ghost", "Hand over control");
         const hmsg = mk("div", "status"); hmsg.id = "sHandMsg";
-        let armed = null;
-        sel.addEventListener("change", () => { armed = null; go.textContent = "Hand over control"; });
+        // The "click again" step lives outside this panel, so it survives the panel redrawing (any change to the
+        // company redraws it) for up to a minute
+        const armedNow = handArmed && handArmed.ticker === c.ticker && Date.now() - handArmed.at < 60000 && heirs.find((x) => x.uid === handArmed.uid);
+        const arm = (h) => {
+          handArmed = { ticker: c.ticker, uid: h.uid, at: handArmed && handArmed.uid === h.uid && handArmed.ticker === c.ticker ? handArmed.at : Date.now() };
+          sel.value = h.uid;
+          go.textContent = `Click again to give ${c.ticker} to ${h.name}`;
+          hmsg.textContent = `You'd stop running ${c.ticker}: its factory, treasury and settings go to ${h.name}. You keep your shares.`; hmsg.className = "status";
+        };
+        if (armedNow) arm(armedNow);
+        sel.addEventListener("change", () => { handArmed = null; go.textContent = "Hand over control"; hmsg.textContent = ""; });
         go.addEventListener("click", async () => {
           const h = heirs.find((x) => x.uid === sel.value);
           if (!h) return;
-          if (armed !== h.uid) { armed = h.uid; go.textContent = `Click again to give ${c.ticker} to ${h.name}`; hmsg.textContent = `You'd stop running ${c.ticker}: its factory, treasury and settings go to ${h.name}. You keep your shares.`; hmsg.className = "status"; return; }
+          const armed = handArmed && handArmed.ticker === c.ticker && handArmed.uid === h.uid && Date.now() - handArmed.at < 60000;
+          if (!armed) { handArmed = null; arm(h); return; }
+          handArmed = null;
           go.disabled = true;
           try { await handOver(c.ticker, h.uid); hmsg.textContent = `✓ ${h.name} now runs ${c.ticker}.`; hmsg.className = "status ok"; }
           catch (e) { hmsg.textContent = errText(e); hmsg.className = "status err"; go.disabled = false; }

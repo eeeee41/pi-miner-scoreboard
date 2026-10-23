@@ -20,8 +20,8 @@
    • While active, whatever the supplier's lines make of the item goes to
      the contract first. The supplier can also deliver from its warehouse.
    • Factories are private, so goods and payments wait in the contract
-     until each side's factory next saves (any action, every 30 s with the
-     Factory tab open, or the 5-minute upkeep), which collects them.
+     until each side's factory next saves (any action, every 2 minutes with the
+     Factory tab open, or the 15-minute upkeep), which collects them.
    • Either side can end an active contract: anything already delivered
      and paid stays, and unused payment goes back to the receiver.
    • Ongoing contracts have no end: `qty` is the size of the deposit (in

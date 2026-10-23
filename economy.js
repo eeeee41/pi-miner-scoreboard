@@ -32,7 +32,12 @@ const Economy = (() => {
   const EXPIRY_MS = 10 * 24 * 3600 * 1000;  // 10 days — keep in sync with firestore.rules
   const BUYOUT_RATE = 0.8;
   const AVG_TRADES = 20;                    // trades averaged for the buyout price
-  const UPKEEP_MS = 5 * 60 * 1000;
+  // Background catch-up while the game is open. The free plan allows 50,000 reads a day for everyone
+  // together, so this runs every 15 minutes, and the game-wide scans for 10-day-old orders and
+  // listings only once an hour per open page.
+  const UPKEEP_MS = 15 * 60 * 1000;
+  const SCAN_MS = 60 * 60 * 1000;
+  let lastScan = 0;
 
   let fb = null, db = null, user = null;
   let unsubs = [], marketUnsubs = [], myOrderUnsubs = new Map(), upkeepTimer = 0;
@@ -327,12 +332,14 @@ const Economy = (() => {
     }
   }
 
-  async function upkeep() {
+  // auto: called by the timer (the expiry scans then run at most once an hour); called directly, it does everything
+  async function upkeep(auto) {
     if (!user) return;
-    try { await settleExpired(); } catch (err) { console.warn("Upkeep:", err); }
+    const scan = auto !== true || Date.now() - lastScan >= SCAN_MS;
+    if (scan) { lastScan = Date.now(); try { await settleExpired(); } catch (err) { console.warn("Upkeep:", err); } }
     if (typeof Factory !== "undefined") await Factory.upkeep().catch((err) => console.warn("Factory upkeep:", err));   // bank car sales first
     if (typeof Companies !== "undefined") await Companies.upkeep().catch((err) => console.warn("Company upkeep:", err));
-    if (typeof Market !== "undefined") await Market.upkeep().catch((err) => console.warn("Market upkeep:", err));
+    if (scan && typeof Market !== "undefined") await Market.upkeep().catch((err) => console.warn("Market upkeep:", err));
     if (typeof Work !== "undefined") await Work.upkeep().catch((err) => console.warn("Work upkeep:", err));
     if (typeof Bank !== "undefined") await Bank.upkeep().catch((err) => console.warn("Bank upkeep:", err));
   }
@@ -760,8 +767,8 @@ const Economy = (() => {
 
     watchMyOrders("PI");
     watchMarket("PI");
-    setTimeout(upkeep, 4000);
-    upkeepTimer = setInterval(upkeep, UPKEEP_MS);
+    setTimeout(() => upkeep(true), 4000);
+    upkeepTimer = setInterval(() => upkeep(true), UPKEEP_MS);
   }
 
   function signOut() {
