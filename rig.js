@@ -173,6 +173,8 @@ const Rig = (() => {
     fb = firebaseNs; db = firestore; hooks = h || {};
     setInterval(() => { if (user && st.meterSince && Date.now() - st.meterSince >= BILL_MS) bill(false); }, 15000);
     setInterval(() => { if (user && document.querySelector("#tab-mine:not(.hidden)")) render(); }, 30000);
+    // Energy companies load (and change their tariffs) separately from the wallet: redraw when they do
+    if (typeof Factory !== "undefined" && Factory.onCompanies) Factory.onCompanies(() => { if (user) render(); });
   }
   function signIn(u) {
     signOut();

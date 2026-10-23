@@ -435,6 +435,9 @@ const Factory = (() => {
   let fb = null, db = null, user = null, unsubs = [], factoryUnsub = null;
   const st = { companies: [], ticker: null, factory: null, busy: false, lastSettle: 0, demand: {}, demandKey: "", openings: [], openingsLoaded: false };
   let openingsUnsub = null;
+  // Other modules (the rig card) that redraw when any company changes
+  const companyWatchers = [];
+  const onCompanies = (fn) => companyWatchers.push(fn);
   let demandUnsubs = [];
 
   /* ---------- helpers ---------- */
@@ -1385,6 +1388,7 @@ const Factory = (() => {
     if (wasOpen && window.matchMedia("(min-width: 1100px)").matches) setTimeout(() => setDrawer(true), 300);
     unsubs.push(db.collection("companies").orderBy("createdAt", "asc").limit(100).onSnapshot((s) => {
       st.companies = s.docs.map((d) => d.data({ serverTimestamps: "estimate" }));
+      for (const fn of companyWatchers) { try { fn(); } catch (e) { console.warn(e); } }
       // Only factories you run can be opened; if you just lost control of this one, switch away
       if (!st.ticker || !company() || !iControl()) {
         const mine = myCompanies()[0];
@@ -1424,5 +1428,6 @@ const Factory = (() => {
   // For the contracts panel: run a change through the controller's factory save
   const actFor = (t, change, opts) => act(change, t, opts);
   const companies = () => st.companies;
-  return { init, signIn, signOut, upkeep, actFor, companies, crewMult, workersOn, outMult, deliver, payDue, room, MAX_CONTRACTS_PER_ACT, fmtDur, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, PRODUCTS, BASE_VALUE, supplierPrice, clone, blank, qtyName };
+  // exported below as onCompanies
+  return { onCompanies, init, signIn, signOut, upkeep, actFor, companies, crewMult, workersOn, outMult, deliver, payDue, room, MAX_CONTRACTS_PER_ACT, fmtDur, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, PRODUCTS, BASE_VALUE, supplierPrice, clone, blank, qtyName };
 })();
