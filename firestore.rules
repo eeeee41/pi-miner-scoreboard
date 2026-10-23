@@ -35,7 +35,7 @@ service cloud.firestore {
 
       allow update: if signedIn() && (
         (request.auth.uid == uid && (walletChange() || startingCash() || starterPi()))
-        || (request.auth.uid != uid && creditOnly())
+        || (request.auth.uid != uid && (creditOnly() || robbed(uid) || heistJail(uid)))
       );
 
       allow delete: if false;
@@ -48,6 +48,8 @@ service cloud.firestore {
           || tradeEntry(entry)
           || dividendEntry()
           || wageEntry()
+          || robbedEntry(entry, uid)
+          || heistEntry(entry, uid)
           || expiryEntry(uid)
         );
         allow update, delete: if false;
@@ -66,6 +68,8 @@ service cloud.firestore {
         || (entry == 'starting-pi' && d.kind == 'piGrant' && d.amount == 10)
         || (d.kind == 'job' && d.keys().hasOnly(['kind', 'job', 'amount', 'hours', 'at']) && d.amount is int && d.at == request.time)
         || (d.kind == 'power' && d.keys().hasOnly(['kind', 'asset', 'kwh', 'amount', 'at']) && d.amount is int && d.at == request.time)
+        || (d.kind == 'crime' && d.keys().hasOnly(['kind', 'what', 'success', 'amount', 'at']) && d.amount is int && d.at == request.time)
+        || (d.kind == 'cover' && d.keys().hasOnly(['kind', 'what', 'seller', 'days', 'amount', 'at']) && d.amount is int && d.at == request.time)
         || (d.kind == 'rig' && d.keys().hasOnly(['kind', 'rig', 'amount', 'at']) && d.amount is int && d.at == request.time)
         || (d.kind == 'bank' && d.keys().hasOnly(['kind', 'action', 'amount', 'at']) && d.amount is int && d.at == request.time)
         || (d.kind in ['founded', 'offering', 'deposit']
@@ -88,6 +92,19 @@ service cloud.firestore {
         && d.keys().hasOnly(['kind', 'asset', 'amount', 'hours', 'at'])
         && d.amount is int && d.amount > 0
         && d.at == request.time;
+    }
+    // Telling a victim they were robbed (the entry is named after the crime record)
+    function robbedEntry(entry, uid) {
+      let d = request.resource.data;
+      return d.kind == 'robbed' && d.keys().hasOnly(['kind', 'by', 'success', 'amount', 'fine', 'claim', 'at']) && d.at == request.time
+        && getAfter(/databases/$(database)/documents/crimes/$(entry)).data.target == uid;
+    }
+    // A heist's result for each crew member (named heistId_uid)
+    function heistEntry(entry, uid) {
+      let d = request.resource.data;
+      return d.kind == 'heist' && d.keys().hasOnly(['kind', 'target', 'success', 'amount', 'at']) && d.at == request.time
+        && entry == entry.split('_')[0] + '_' + uid
+        && uid in getAfter(/databases/$(database)/documents/heists/$(entry.split('_')[0])).data.members;
     }
     // A company paying a player employee's wages
     function wageEntry() {
@@ -112,7 +129,8 @@ service cloud.firestore {
     // The owner trading, cancelling or collecting a block reward: balances stay whole and never go negative
     function walletChange() {
       let w = request.resource.data;
-      return changed().hasOnly(['cash', 'coins', 'blocksMined', 'shift', 'workXp', 'bank', 'bankAt', 'loan', 'loanAt', 'collateral', 'rig', 'powerFrom'])
+      return changed().hasOnly(['cash', 'coins', 'blocksMined', 'shift', 'workXp', 'bank', 'bankAt', 'loan', 'loanAt', 'collateral', 'rig', 'powerFrom',
+                                'crimeXp', 'jailUntil', 'lastCrimeAt', 'security', 'insurance', 'lastHeist'])
         && w.get('rig', 0) is int && w.get('rig', 0) >= 0 && w.get('rig', 0) <= 4
         && (w.get('powerFrom', null) == null || w.powerFrom is string)
         && isCount(w.get('cash', 0))
@@ -138,6 +156,29 @@ service cloud.firestore {
     }
 
     // Another player paying you for a trade: they can only add, never take
+    // Being robbed: the change must match the robber's crime record exactly, at most a quarter of
+    // the cash on hand (and $5,000), and nobody can be robbed twice within 3 hours. Bots can't be robbed.
+    function robbed(uid) {
+      let r = request.resource.data;
+      let cr = getAfter(/databases/$(database)/documents/crimes/$(request.auth.uid + '_' + string(r.robbedAt))).data;
+      return changed().hasOnly(['cash', 'robbedAt'])
+        && !uid.matches('bot-.*')
+        && r.robbedAt is int
+        && r.robbedAt <= request.time.toMillis() + 60000 && r.robbedAt >= request.time.toMillis() - 120000
+        && resource.data.get('robbedAt', 0) < r.robbedAt - 10800000
+        && cr.target == uid && cr.by == request.auth.uid
+        && cr.taken <= 500000 && cr.taken <= resource.data.cash / 4 + 1
+        && r.cash == resource.data.cash - cr.taken + cr.claim + cr.fine;
+    }
+    // A failed heist: its leader fines (at most the heist's fine) and jails each crew member for up to an hour
+    function heistJail(uid) {
+      let r = request.resource.data;
+      let h = getAfter(/databases/$(database)/documents/heists/$(r.lastHeist)).data;
+      return changed().hasOnly(['cash', 'jailUntil', 'lastHeist'])
+        && h.status == 'done' && h.success == false && h.leader == request.auth.uid && uid in h.members
+        && r.cash >= resource.data.cash - h.fine && r.cash <= resource.data.cash
+        && r.jailUntil is int && r.jailUntil <= request.time.toMillis() + 3660000;
+    }
     function creditOnly() {
       return changed().hasOnly(['cash', 'coins'])
         && request.resource.data.get('cash', 0) >= resource.data.get('cash', 0)
@@ -240,7 +281,7 @@ service cloud.firestore {
       allow create: if signedIn() && newCompany(ticker);
       allow update: if signedIn()
         && (companySettings() || buyOffering() || addToTreasury() || payout() || takeControl(ticker)
-            || newLastPrice() || controllerSpends() || buyPower());
+            || newLastPrice() || controllerSpends() || buyPower() || insuranceClaim(ticker) || heistHit(ticker));
       allow delete: if false;
 
       // The factory: only the controller sees or runs it (warehouse, lines, research, staff, sales)
@@ -299,7 +340,9 @@ service cloud.firestore {
     function companySettings() {
       let c = request.resource.data;
       return resource.data.controller == request.auth.uid
-        && changed().hasOnly(['dividendPerHour', 'offerPrice', 'offerLeft', 'industry', 'tradingClosed', 'tariff'])
+        && changed().hasOnly(['dividendPerHour', 'offerPrice', 'offerLeft', 'industry', 'tradingClosed', 'tariff', 'securityPrice', 'insurancePrice'])
+        && (!('securityPrice' in c) || (c.securityPrice is int && c.securityPrice >= 0 && c.securityPrice <= 10000000))
+        && (!('insurancePrice' in c) || (c.insurancePrice is int && c.insurancePrice >= 0 && c.insurancePrice <= 10000000))
         && (!('tariff' in c) || (c.tariff is int && c.tariff >= 0 && c.tariff <= 100000))
         && (!('tradingClosed' in c) || c.tradingClosed is bool)
         && c.industry is string && c.industry.size() > 0 && c.industry.size() <= 40
@@ -351,10 +394,30 @@ service cloud.firestore {
     // The controller spends the treasury on the factory (materials, lines) and banks car sales
     function controllerSpends() {
       return resource.data.controller == request.auth.uid
-        && changed().hasOnly(['treasury', 'powerOwed'])
+        && changed().hasOnly(['treasury', 'powerOwed', 'securityUntil', 'securityBy'])
         && isCount(request.resource.data.treasury)
         && request.resource.data.get('powerOwed', 0) is int && request.resource.data.get('powerOwed', 0) >= 0
         && request.resource.data.get('powerOwed', 0) <= resource.data.get('powerOwed', 0);
+    }
+
+    // An insurer paying a robbery claim: exactly what the crime record says it owes
+    function insuranceClaim(ticker) {
+      let cr = getAfter(/databases/$(database)/documents/crimes/$(request.resource.data.lastClaim)).data;
+      return changed().hasOnly(['treasury', 'lastClaim'])
+        && cr.insurer == ticker && cr.by == request.auth.uid
+        && resource.data.treasury - request.resource.data.treasury == cr.claim;
+    }
+    // A heist: at most once every 12 hours, taking exactly what the heist record says (at most 20% and $20,000),
+    // or, if it failed, only paying fines into the treasury
+    function heistHit(ticker) {
+      let r = request.resource.data;
+      let h = getAfter(/databases/$(database)/documents/heists/$(r.lastHeist)).data;
+      return changed().hasOnly(['treasury', 'heistedAt', 'lastHeist'])
+        && h.target == ticker && h.leader == request.auth.uid && h.status == 'done'
+        && r.heistedAt is int && r.heistedAt <= request.time.toMillis() + 60000 && r.heistedAt >= request.time.toMillis() - 120000
+        && resource.data.get('heistedAt', 0) < r.heistedAt - 43200000
+        && ((h.success == true && resource.data.treasury - r.treasury == h.take && h.take <= 2000000 && h.take <= resource.data.treasury / 5 + 1)
+          || (h.success == false && r.treasury >= resource.data.treasury));
     }
 
     // A miner buying electricity from an Energy company: pays at least its tariff for every kWh it's owed
@@ -384,6 +447,48 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['load', 'at'])
         && request.resource.data.load is number && request.resource.data.load >= 0
         && request.resource.data.at is int && request.resource.data.at <= request.time.toMillis() + 60000;
+      allow delete: if false;
+    }
+
+    // ---------------- Crime ----------------
+    // One record per robbery, written by the robber, never changed
+    match /crimes/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && id == request.auth.uid + '_' + string(request.resource.data.t)
+        && request.resource.data.keys().hasOnly(['kind', 'by', 'byName', 'target', 'targetName', 'success', 'taken', 'fine', 'claim', 'insurer', 't', 'at'])
+        && request.resource.data.by == request.auth.uid && request.resource.data.kind == 'rob'
+        && request.resource.data.target != request.auth.uid
+        && isCount(request.resource.data.taken) && request.resource.data.taken <= 500000
+        && isCount(request.resource.data.fine) && isCount(request.resource.data.claim)
+        && request.resource.data.claim <= request.resource.data.taken / 2 + 1
+        && (request.resource.data.success == true || request.resource.data.taken == 0)
+        && request.resource.data.at == request.time;
+      allow update, delete: if false;
+    }
+    // Heist crews: the leader plans it, players join or leave while it's forming, the leader launches it
+    function heistShape(h) {
+      return h.keys().hasOnly(['target', 'targetName', 'leader', 'leaderName', 'crew', 'members', 'status', 'createdAt', 't', 'success', 'take', 'share', 'fine', 'doneAt'])
+        && h.crew is list && h.members is list && h.members.size() == h.crew.size() && h.members.size() <= 4
+        && h.status in ['forming', 'done', 'cancelled'];
+    }
+    match /heists/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && heistShape(request.resource.data)
+        && request.resource.data.leader == request.auth.uid && request.resource.data.status == 'forming'
+        && request.resource.data.members == [request.auth.uid]
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn() && heistShape(request.resource.data) && resource.data.status == 'forming'
+        && request.resource.data.leader == resource.data.leader && request.resource.data.target == resource.data.target
+        && (
+          // joining or leaving
+          (request.resource.data.status == 'forming' && changed().hasOnly(['crew', 'members'])
+            && ((request.resource.data.members.size() == resource.data.members.size() + 1 && request.auth.uid in request.resource.data.members && !(request.auth.uid in resource.data.members))
+              || (request.resource.data.members.size() == resource.data.members.size() - 1 && !(request.auth.uid in request.resource.data.members) && request.auth.uid in resource.data.members)))
+          // the leader launching or calling it off
+          || (resource.data.leader == request.auth.uid && request.resource.data.status in ['done', 'cancelled']
+            && changed().hasOnly(['status', 'success', 'take', 'share', 'fine', 'doneAt'])
+            && (request.resource.data.status == 'cancelled' || (request.resource.data.take is int && request.resource.data.take <= 2000000 && request.resource.data.fine is int && request.resource.data.fine <= 50000)))
+        );
       allow delete: if false;
     }
 

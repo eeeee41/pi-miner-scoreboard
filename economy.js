@@ -99,6 +99,9 @@ const Economy = (() => {
      change (a wallet is written once per transaction). */
   const feesRef = () => db.collection("meta").doc("fees");
   function payFee(tx, me, what = "This") {
+    // Jail (crime.js) blocks every paid action
+    if (me && me.jailUntil > Date.now())
+      throw new Error(`You're in jail for another ${Math.max(1, Math.ceil((me.jailUntil - Date.now()) / 60000))} min. You can't do that until you're out.`);
     const coins = (me && me.coins) || 0;
     if (coins < FEE)
       throw new Error(`${what} costs a ${FEE} Pi fee, and you have no Pi. Mine a block, or buy Pi on the Exchange (buying Pi is free when you have none).`);
@@ -191,6 +194,7 @@ const Economy = (() => {
       }
 
       const me = meSnap.data() || {};
+      if (me.jailUntil > Date.now()) throw new Error(`You're in jail for another ${Math.max(1, Math.ceil((me.jailUntil - Date.now()) / 60000))} min. You can't trade until you're out.`);
       let cash = me.cash || 0;
       let held = isPi(asset) ? me.coins || 0 : (heldSnap.exists && heldSnap.data().shares) || 0;
       const value = fills.reduce((a, f) => a + f.n * f.o.p, 0);
@@ -599,6 +603,12 @@ const Economy = (() => {
         case "grant": text = "Starting Cash"; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
         case "piGrant": text = "Starter Pi, for transaction fees"; amt = ["pos", `+${fmtPi(h.amount)}`]; break;
         case "job": text = `Shift as a ${String(h.job).toLowerCase()} (${h.hours} hour${h.hours === 1 ? "" : "s"})`; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
+        case "robbed":
+          text = h.success ? `${h.by} robbed you${h.claim ? ` (your insurer paid back ${fmtCash(h.claim)})` : ""}` : `${h.by} tried to rob you, got caught and paid you a fine`;
+          amt = h.success ? ["", `−${fmtCash(h.amount - (h.claim || 0))}`] : ["pos", `+${fmtCash(h.fine)}`]; break;
+        case "crime": text = `${h.what}: ${h.success ? "got away with it" : "caught, fined and jailed"}`; amt = [h.amount >= 0 ? "pos" : "", `${h.amount >= 0 ? "+" : "−"}${fmtCash(Math.abs(h.amount))}`]; break;
+        case "heist": text = `Heist on ${h.target}: ${h.success ? "your share" : "caught, fined and jailed"}`; amt = [h.amount >= 0 ? "pos" : "", `${h.amount >= 0 ? "+" : "−"}${fmtCash(Math.abs(h.amount))}`]; break;
+        case "cover": text = `${h.what === "security" ? "Security" : "Insurance"} from ${h.seller} for ${h.days} day${h.days === 1 ? "" : "s"}`; amt = ["", `−${fmtCash(h.amount)}`]; break;
         case "power": text = `Electricity for mining from ${h.asset === "GRID" ? "the grid" : h.asset} (${(h.kwh / 1000).toFixed(2)} MWh)`; amt = ["", `−${fmtCash(h.amount)}`]; break;
         case "rig": text = `Bought: ${h.rig}`; amt = ["", `−${fmtCash(h.amount)}`]; break;
         case "wage": text = `Wages from ${a} (${h.hours} hour${h.hours === 1 ? "" : "s"})`; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
@@ -645,7 +655,7 @@ const Economy = (() => {
   }
 
   /* ---------- tabs ---------- */
-  const TABS = ["mine", "wallet", "exchange", "stocks", "factory", "market", "work", "bank"];
+  const TABS = ["mine", "wallet", "exchange", "stocks", "factory", "market", "work", "bank", "crime"];
   function showTab(name) {
     if (!TABS.includes(name)) name = "mine";
     document.body.dataset.tab = name;          // lets page-wide pieces (like the Employees panel) follow the tab

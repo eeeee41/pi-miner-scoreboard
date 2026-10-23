@@ -678,6 +678,7 @@ function handleAuth(user) {
     Work.signOut();
     Bank.signOut();
     Rig.signOut();
+    Crime.signOut();
     resetSession();
     $("dashboard").classList.add("hidden");
     $("userChip").classList.add("hidden");
@@ -703,6 +704,7 @@ function handleAuth(user) {
   Work.signIn(user);                           // day jobs and jobs at companies
   Bank.signIn(user);                           // deposits and loans
   Rig.signIn(user);                            // mining licence, rig and electricity
+  Crime.signIn(user);                          // robberies, heists, jail, protection
   const session = state.session;
   const live = (fn) => (...args) => { if (session === state.session) fn(...args); };
   const fail = (what) => live((err) => setStatus(`${what}: ${dbErrorMessage(err)}`, "err"));
@@ -779,6 +781,7 @@ if (typeof firebase === "undefined") {
   Market.init(firebase, db);
   Work.init(firebase, db);
   Bank.init(firebase, db);
+  Crime.init(firebase, db);
   Rig.init(firebase, db, { stop: () => { if (state.running) onToggleClick(); }, changed: () => render() });
   auth.getRedirectResult().catch(showAuthError);
   auth.onAuthStateChanged(handleAuth);

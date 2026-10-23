@@ -67,6 +67,7 @@ const Work = (() => {
     const ref = userRef(user.uid);
     const w = (await tx.get(ref)).data() || {};
     const job = jobOf(key);
+    if (w.jailUntil > Date.now()) throw new Error("You can't work a shift from jail.");
     if (w.shift) throw new Error("You're already on a shift. Finish it or stop it first.");
     if ((w.workXp || 0) < job.needs) throw new Error(`${job.name} needs ${job.needs} hours of work experience; you have ${w.workXp || 0}.`);
     const t = Date.now();

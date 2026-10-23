@@ -75,7 +75,7 @@ const Factory = (() => {
 
   // What each industry can make. A company's lines only run its own industry's recipes; everything
   // else it needs comes from other companies on the Market, or from suppliers at their prices.
-  const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance"];
+  const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance", "Security"];
   // Mining and Farming companies run sites instead of lines (sites.js); these recipes are for the others
   const MINES = ["Steel and metals"], FARMS = ["Food"];
   // inputs → `yields` units (default 1) every `secs`; `how` = where it comes from when it needs no inputs;
@@ -896,6 +896,7 @@ const Factory = (() => {
       ? `${c.ticker} is ${aAn(c.industry)} ${c.industry.toLowerCase()} company. ${c.industry === "Mining" ? "It surveys deposits and runs mines that dig around the clock." : "It grows crops in fields, taps rubber on plantations and raises cattle in pens."}`
       : mine.length
       ? `${c.ticker} is ${aAn(c.industry)} ${c.industry.toLowerCase()} company. Its lines can make ${mine.map((k) => ITEMS[k].name.toLowerCase()).join(", ")}.`
+      : c.industry === "Security" ? `${c.ticker} is a security company: it sells protection to players and companies against robberies and heists (set a daily price on the Stocks tab). It needs no factory.`
       : `${c.ticker}'s industry (${c.industry}) has nothing to make yet.`);
     const perHour = f.lines.reduce((a, l) => a + lineCostNow(l), 0);
     const nextBill = Math.max(1, Math.ceil(((f.upkeepPaidTo || Math.floor(Date.now() / HOUR) * HOUR) + HOUR - Date.now()) / 60000));

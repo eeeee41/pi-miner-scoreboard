@@ -26,7 +26,7 @@ const Companies = (() => {
   const MAX_CATCHUP_HOURS = 168;     // a payout covers at most a week of missed hours
   const MAX_PAYEES = 200;            // shareholders paid per payout (Firestore: 500 writes per transaction)
   // Same list as Factory.INDUSTRIES: the industry decides what the company's lines can make
-  const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance"];
+  const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance", "Security"];
 
   let fb = null, db = null, user = null;
   let unsubs = [], detailUnsubs = [], holderUnsubs = new Map();
@@ -115,8 +115,9 @@ const Companies = (() => {
     });
   }
 
-  async function saveSettings(ticker, { dividendPerHour, offerPrice, offerLeft, industry, tradingClosed, tariff }) {
-    await companyRef(ticker).update({ dividendPerHour, offerPrice, offerLeft, industry, tradingClosed, ...(tariff != null ? { tariff } : {}) });
+  async function saveSettings(ticker, { dividendPerHour, offerPrice, offerLeft, industry, tradingClosed, tariff, securityPrice, insurancePrice }) {
+    await companyRef(ticker).update({ dividendPerHour, offerPrice, offerLeft, industry, tradingClosed, ...(tariff != null ? { tariff } : {}),
+      ...(securityPrice != null ? { securityPrice } : {}), ...(insurancePrice != null ? { insurancePrice } : {}) });
   }
 
   // The controller hands the company to another shareholder (a player, not the market or a bot)
@@ -324,6 +325,11 @@ const Companies = (() => {
         tariffRow.append(field("sTariff", "Electricity for miners ($ per MWh, 0 = not selling)", { type: "number", min: 0, step: 0.01, value: ((c.tariff || 0) / 100).toFixed(2) }));
         tariffRow.append(mk("p", "co-note", `The grid charges $8.00/MWh. Miners who pick you pay into the treasury as they mine, and your power lines deliver what they bought before selling to everyday buyers.${c.powerOwed ? ` Still to deliver: ${(c.powerOwed / 1000).toFixed(1)} MWh${c.powerOwed >= 100000 ? " (over 100 MWh: no new customers until your plants catch up)" : ""}.` : ""}`));
       }
+      // Security and Finance companies sell protection to players (Crime tab)
+      if (c.industry === "Security") tariffRow.append(field("sSecPrice", "Security for players and companies ($ a day, 0 = not selling)", { type: "number", min: 0, step: 0.01, value: ((c.securityPrice || 0) / 100).toFixed(2) }),
+        mk("p", "co-note", "Customers are 25% harder to rob, and companies 15% harder to hit with a heist. They pay into the treasury when they buy."));
+      if (c.industry === "Finance") tariffRow.append(field("sInsPrice", "Robbery insurance for players ($ a day, 0 = not selling)", { type: "number", min: 0, step: 0.01, value: ((c.insurancePrice || 0) / 100).toFixed(2) }),
+        mk("p", "co-note", "When a customer is robbed, the treasury pays them back half of what was taken. Price it so premiums beat claims."));
       const closeL = mk("label", "check-row"); closeL.htmlFor = "sClosed";
       const closeBox = mk("input"); closeBox.type = "checkbox"; closeBox.id = "sClosed"; closeBox.checked = !!c.tradingClosed;
       closeL.append(closeBox, mk("span", null, "Close trading in our shares: no buying or selling between players on the Exchange. New shares only come from our own offerings."));
@@ -341,7 +347,10 @@ const Companies = (() => {
         if (offerLeft > 10000000) throw new Error("Offer at most 10,000,000 new shares at a time.");
         const tariff = g("sTariff") ? toCents(g("sTariff").value) : null;
         if (tariff != null && !(tariff >= 0 && tariff <= 100000)) throw new Error("Set a tariff between $0 and $1,000 per MWh.");
-        await saveSettings(c.ticker, { dividendPerHour, offerPrice, offerLeft, industry: g("sSetIndustry").value, tradingClosed: g("sClosed").checked, tariff });
+        const securityPrice = g("sSecPrice") ? toCents(g("sSecPrice").value) : null;
+        const insurancePrice = g("sInsPrice") ? toCents(g("sInsPrice").value) : null;
+        for (const v of [securityPrice, insurancePrice]) if (v != null && !(v >= 0 && v <= 10000000)) throw new Error("Set a daily price between $0 and $100,000.");
+        await saveSettings(c.ticker, { dividendPerHour, offerPrice, offerLeft, industry: g("sSetIndustry").value, tradingClosed: g("sClosed").checked, tariff, securityPrice, insurancePrice });
         return "✓ Saved.";
       }, "sCtlMsg");
       const cmsg = mk("div", "status"); cmsg.id = "sCtlMsg";

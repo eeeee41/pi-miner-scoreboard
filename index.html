@@ -430,6 +430,7 @@
       <button class="tab" role="tab" id="tabBtn-market" data-tab="market" aria-selected="false">Market</button>
       <button class="tab" role="tab" id="tabBtn-work" data-tab="work" aria-selected="false">Work</button>
       <button class="tab" role="tab" id="tabBtn-bank" data-tab="bank" aria-selected="false">Bank</button>
+      <button class="tab" role="tab" id="tabBtn-crime" data-tab="crime" aria-selected="false">Crime</button>
     </nav>
 
     <div id="tab-mine" role="tabpanel">
@@ -553,6 +554,31 @@
             <button class="btn-ghost" id="bRepay">Repay</button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- ===== Crime ===== -->
+    <div id="tab-crime" role="tabpanel" class="hidden">
+      <div class="card">
+        <h2>Your record</h2>
+        <div class="status" id="cMsgCrime" role="status" aria-live="polite"></div>
+        <div id="crStatus"></div>
+      </div>
+      <div class="ex-grid factory-grid">
+        <div class="card">
+          <h2>Rob a player</h2>
+          <p class="co-note" style="margin: -6px 0 12px">Take 10–25% of someone's cash on hand. Get caught and you pay them a fine and go to jail. One job every 15 minutes; nobody can be robbed twice in 3 hours. Costs the 1 Pi fee.</p>
+          <div id="crTargets"></div>
+        </div>
+        <div class="card">
+          <h2>Heists</h2>
+          <p class="co-note" style="margin: -6px 0 12px">A crew of 2–4 hits a company's treasury for 10–20% (at most $20,000), split evenly. Harder than a robbery, and a failed heist jails the whole crew for an hour.</p>
+          <div id="crHeists"></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top: 16px">
+        <h2>Protection</h2>
+        <div id="crCover"></div>
       </div>
     </div>
 
@@ -804,20 +830,21 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <!-- Game scripts. Bump ?v= on every release so browsers never mix old and new files. -->
 <!-- Phase 1: wallets and the Pi coin exchange -->
-<script src="economy.js?v=20261022-2100"></script>
+<script src="economy.js?v=20261022-2300"></script>
 <!-- Phase 2: companies, shares and dividends -->
-<script src="companies.js?v=20261022-2100"></script>
+<script src="companies.js?v=20261022-2300"></script>
 <!-- Phase 3: production -->
-<script src="sites.js?v=20261022-2100"></script>
-<script src="factory.js?v=20261022-2100"></script>
+<script src="sites.js?v=20261022-2300"></script>
+<script src="factory.js?v=20261022-2300"></script>
 <!-- Phase 4: marketplace for goods -->
-<script src="contracts.js?v=20261022-2100"></script>
-<script src="work.js?v=20261022-2100"></script>
-<script src="bank.js?v=20261022-2100"></script>
-<script src="rig.js?v=20261022-2100"></script>
-<script src="market.js?v=20261022-2100"></script>
+<script src="contracts.js?v=20261022-2300"></script>
+<script src="work.js?v=20261022-2300"></script>
+<script src="bank.js?v=20261022-2300"></script>
+<script src="rig.js?v=20261022-2300"></script>
+<script src="crime.js?v=20261022-2300"></script>
+<script src="market.js?v=20261022-2300"></script>
 
 <!-- Mining on the shared Pi blockchain + sign-in (loads last) -->
-<script src="miner.js?v=20261022-2100"></script>
+<script src="miner.js?v=20261022-2300"></script>
 </body>
 </html>
