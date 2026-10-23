@@ -280,6 +280,8 @@
   .f-buy { margin-top: 10px; width: 100%; padding: 10px; }
   .f-table-wrap { overflow-x: auto; }
   .f-others { margin-top: 10px; }
+  .s-build { margin-top: 12px; flex-wrap: wrap; }
+  .f-line .check-row { margin: 0; align-items: center; }
   .check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; margin: 10px 0; cursor: pointer; }
   .check-row input { margin-top: 3px; width: 18px; height: 18px; flex: none; accent-color: var(--accent, #f5b84b); }
   .c-row { padding: 12px 0; border-bottom: 1px solid var(--border); display: grid; gap: 6px; }
@@ -495,7 +497,7 @@
     <!-- ===== Work ===== -->
     <div id="tab-work" role="tabpanel" class="hidden">
       <div class="status" id="jMsg" role="status" aria-live="polite"></div>
-      <div class="factory-grid">
+      <div class="ex-grid factory-grid" style="margin-top: 0">
         <div class="card">
           <h2>Day jobs</h2>
           <p class="co-note" style="margin: -6px 0 12px">Work a shift and get paid when it ends. No company needed.</p>
@@ -520,7 +522,7 @@
         <div class="status" id="bMsg" role="status" aria-live="polite"></div>
         <div id="bSummary"></div>
       </div>
-      <div class="factory-grid" style="margin-top: 16px">
+      <div class="ex-grid factory-grid">
         <div class="card">
           <h2>Deposits</h2>
           <p class="co-note" style="margin: -6px 0 12px">Cash in the bank earns 0.25% a day, and robbers can't touch it.</p>
@@ -652,7 +654,8 @@
       </div>
       <div class="ex-grid factory-grid">
         <div class="card">
-          <h2>Production lines</h2>
+          <h2 id="fLinesTitle">Production lines</h2>
+          <div id="fSites" class="hidden"></div>
           <div id="fLines"><div class="empty">Loading…</div></div>
           <button class="btn-primary buy hidden" id="fBuild">Build a production line</button>
         </div>
@@ -794,18 +797,19 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <!-- Game scripts. Bump ?v= on every release so browsers never mix old and new files. -->
 <!-- Phase 1: wallets and the Pi coin exchange -->
-<script src="economy.js?v=20261022-1900"></script>
+<script src="economy.js?v=20261022-2000"></script>
 <!-- Phase 2: companies, shares and dividends -->
-<script src="companies.js?v=20261022-1900"></script>
+<script src="companies.js?v=20261022-2000"></script>
 <!-- Phase 3: production -->
-<script src="factory.js?v=20261022-1900"></script>
+<script src="sites.js?v=20261022-2000"></script>
+<script src="factory.js?v=20261022-2000"></script>
 <!-- Phase 4: marketplace for goods -->
-<script src="contracts.js?v=20261022-1900"></script>
-<script src="work.js?v=20261022-1900"></script>
-<script src="bank.js?v=20261022-1900"></script>
-<script src="market.js?v=20261022-1900"></script>
+<script src="contracts.js?v=20261022-2000"></script>
+<script src="work.js?v=20261022-2000"></script>
+<script src="bank.js?v=20261022-2000"></script>
+<script src="market.js?v=20261022-2000"></script>
 
 <!-- Mining on the shared Pi blockchain + sign-in (loads last) -->
-<script src="miner.js?v=20261022-1900"></script>
+<script src="miner.js?v=20261022-2000"></script>
 </body>
 </html>

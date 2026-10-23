@@ -245,8 +245,9 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/companies/$(ticker)).data.controller == request.auth.uid;
         allow create, update: if signedIn() && doc == 'main'
           && get(/databases/$(database)/documents/companies/$(ticker)).data.controller == request.auth.uid
-          && request.resource.data.keys().hasOnly(['inventory', 'lines', 'carsSold', 'revenue', 'research', 'project',
+          && request.resource.data.keys().hasOnly(['inventory', 'lines', 'sites', 'carsSold', 'revenue', 'research', 'project',
                                                     'staff', 'wagesPaidTo', 'news', 'upkeepPaidTo', 'settledAt', 'updatedAt'])
+          && (!('sites' in request.resource.data) || (request.resource.data.sites is list && request.resource.data.sites.size() <= 10))
           && (!('staff' in request.resource.data) || (request.resource.data.staff is list && request.resource.data.staff.size() <= 40))
           && request.resource.data.inventory is map
           && request.resource.data.lines is list && request.resource.data.lines.size() <= 10

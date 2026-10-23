@@ -76,7 +76,8 @@ const Factory = (() => {
   // What each industry can make. A company's lines only run its own industry's recipes; everything
   // else it needs comes from other companies on the Market, or from suppliers at their prices.
   const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance"];
-  const MINES = ["Mining", "Steel and metals"], FARMS = ["Farming", "Food"];
+  // Mining and Farming companies run sites instead of lines (sites.js); these recipes are for the others
+  const MINES = ["Steel and metals"], FARMS = ["Food"];
   // inputs → `yields` units (default 1) every `secs`; `how` = where it comes from when it needs no inputs;
   // `sellsFor` = everyday buyers take it the moment it's made, for this many cents
   const RECIPES = {
@@ -92,8 +93,8 @@ const Factory = (() => {
     power:       { inputs: { coal: 3 }, secs: 30, ind: ["Energy"], sellsFor: 550 },
     wheat:       { inputs: {}, secs: 20, yields: 2, ind: FARMS, how: "grown" },
     vegetables:  { inputs: {}, secs: 15, yields: 2, ind: FARMS, how: "grown" },
-    cotton:      { inputs: {}, secs: 25, ind: ["Farming"], how: "grown" },
-    rubber:      { inputs: {}, secs: 40, ind: ["Farming"], how: "tapped from rubber trees" },
+    cotton:      { inputs: {}, secs: 25, ind: [], how: "grown" },                    // Farming fields (sites.js)
+    rubber:      { inputs: {}, secs: 40, ind: [], how: "tapped from rubber trees" }, // Farming plantations (sites.js)
     cattle:      { inputs: { wheat: 10 }, secs: 300, ind: FARMS },
     flour:       { inputs: { wheat: 3 }, secs: 30, ind: ["Food"] },
     beef:        { inputs: { cattle: 1 }, secs: 120, yields: 10, ind: ["Food"] },
@@ -142,14 +143,22 @@ const Factory = (() => {
 
   // Research: real-time projects paid from the treasury, one at a time per company
   const RESEARCH = {
-    robots1: { name: "Robot arms",              cost: 200000,  hours: 0.5, needs: null,      does: "Lets you fit robot arms to production lines: 1.5× faster" },
-    robots2: { name: "Assembly robots",         cost: 800000,  hours: 2,   needs: "robots1", does: "Lets you fit assembly robots: 2.5× faster" },
-    robots3: { name: "Fully automated lines",    cost: 2000000, hours: 6,   needs: "robots2", does: "Lets you fully automate a line: 4× faster" },
-    alloy1:  { name: "Cheaper alloys",          cost: 300000,  hours: 1,   needs: null,      does: "Steel needs 1 iron ore instead of 2" },
-    alloy2:  { name: "Lightweight alloys",      cost: 1000000, hours: 3,   needs: "alloy1",  does: "Cars need 4 steel instead of 6" },
-    harvest: { name: "Heavy machinery and better seeds", cost: 400000, hours: 1, needs: null, does: "Everything your lines mine, drill or grow comes out 2 at a time" },
+    robots1: { name: "Robot arms",              cost: 200000,  hours: 0.5, needs: null,      lines: true, does: "Lets you fit robot arms to production lines: 1.5× faster" },
+    robots2: { name: "Assembly robots",         cost: 800000,  hours: 2,   needs: "robots1", lines: true, does: "Lets you fit assembly robots: 2.5× faster" },
+    robots3: { name: "Fully automated lines",    cost: 2000000, hours: 6,   needs: "robots2", lines: true, does: "Lets you fully automate a line: 4× faster" },
+    alloy1:  { name: "Cheaper alloys",          cost: 300000,  hours: 1,   needs: null,      lines: true, does: "Steel needs 1 iron ore instead of 2" },
+    alloy2:  { name: "Lightweight alloys",      cost: 1000000, hours: 3,   needs: "alloy1",  lines: true, does: "Cars need 4 steel instead of 6" },
+    harvest: { name: "Heavy machinery and better seeds", cost: 400000, hours: 1, needs: null, lines: true, does: "Everything your lines mine, drill or grow comes out 2 at a time" },
     labs:    { name: "Better research methods", cost: 500000,  hours: 1,   needs: null,      does: "All research after this finishes twice as fast" }
   };
+  // Mining and Farming have their own research (sites.js)
+  if (typeof Sites !== "undefined") Object.assign(RESEARCH, Sites.RESEARCH);
+  const siteInd = (ind) => typeof Sites !== "undefined" && Sites.isSiteIndustry(ind);
+  // Which research a company of this industry can do
+  const researchFor = (ind) => Object.keys(RESEARCH).filter((k) => {
+    const r = RESEARCH[k];
+    return r.ind ? r.ind.includes(ind) : r.lines ? !siteInd(ind) : true;
+  });
   // Robot tiers a line can be upgraded to (each needs its research first)
   const ROBOTS = [
     { name: "Workers only",    mult: 1 },
@@ -233,6 +242,8 @@ const Factory = (() => {
     }
     return f;
   }
+  // Speed-up from the workers on a site (sites have no robots)
+  const crewMult = (site, f) => 1 + workersOn(f, site).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f);
   const lineMult = (line, f) =>
     ROBOTS[line.robots || 0].mult * (1 + workersOn(f, line).reduce((a, s) => a + 0.1 * s.skill, 0) * managerBoost(f));
   const unitMs = (line, f) => (RECIPES[line.recipe].secs * 1000) / lineMult(line, f);
@@ -368,8 +379,15 @@ const Factory = (() => {
       cost += Math.round(UPKEEP_IDLE * idleHours + ((UPKEEP_BUSY - UPKEEP_IDLE) * busy) / HOUR);
       l.busyDone = 0;
     }
+    // Mines, fields, plantations and pens: a flat rate for each whole hour they existed
+    for (const x of f.sites || []) {
+      if (!x.builtAt || typeof Sites === "undefined") continue;
+      const since = Math.max(f.upkeepPaidTo, Math.ceil(x.builtAt / HOUR) * HOUR);
+      cost += Sites.upkeepOf(x) * Math.max(0, Math.min(hours, (hourNow - since) / HOUR));
+    }
     f.upkeepPaidTo = hourNow;
     if (cost <= treasury) return treasury - cost;
+    const sitesStopped = typeof Sites !== "undefined" ? Sites.pauseAll(f) : 0;
     let stopped = 0;
     for (const l of f.lines) {
       if (!l.queued || !l.startedAt) continue;
@@ -377,13 +395,15 @@ const Factory = (() => {
       l.startedAt = null;
       stopped++;
     }
-    f.news = [`The treasury couldn't pay ${fmtCash(cost)} of line upkeep${stopped ? `, so ${stopped} line${stopped === 1 ? "" : "s"} stopped until there's money again` : ""}`, ...(f.news || [])].slice(0, 8);
+    const what = [stopped && `${stopped} line${stopped === 1 ? "" : "s"}`, sitesStopped && `${sitesStopped} site${sitesStopped === 1 ? "" : "s"}`].filter(Boolean).join(" and ");
+    f.news = [`The treasury couldn't pay ${fmtCash(cost)} of upkeep${what ? `, so ${what} stopped until there's money again` : ""}`, ...(f.news || [])].slice(0, 8);
     return 0;
   }
 
   // Lines stopped for unpaid upkeep pick up where they left off once the treasury has money
   function resume(f, now, treasury) {
     if (treasury <= 0) return;
+    if (typeof Sites !== "undefined") Sites.resumeAll(f);
     for (const l of f.lines) {
       if (l.paused == null) continue;
       if (l.queued) l.startedAt = now - l.paused * unitMs(l, f);
@@ -408,10 +428,10 @@ const Factory = (() => {
   const errText = (e) => Economy.errText(e);
   const companyRef = (t) => db.collection("companies").doc(t);
   const factoryRef = (t) => companyRef(t).collection("factory").doc("main");
-  const blank = () => ({ inventory: {}, lines: [], carsSold: 0, revenue: 0, research: {}, project: null, staff: [], wagesPaidTo: null, news: [], upkeepPaidTo: null, settledAt: null });
+  const blank = () => ({ inventory: {}, lines: [], sites: [], carsSold: 0, revenue: 0, research: {}, project: null, staff: [], wagesPaidTo: null, news: [], upkeepPaidTo: null, settledAt: null });
   // Every writer of the factory doc goes through this, so no field is ever dropped
   const clone = (f) => JSON.parse(JSON.stringify({
-    inventory: f.inventory || {}, lines: f.lines || [], carsSold: f.carsSold || 0, revenue: f.revenue || 0,
+    inventory: f.inventory || {}, lines: f.lines || [], sites: f.sites || [], carsSold: f.carsSold || 0, revenue: f.revenue || 0,
     research: f.research || {}, project: f.project || null,
     staff: f.staff || [], wagesPaidTo: f.wagesPaidTo || null, news: f.news || [],
     upkeepPaidTo: f.upkeepPaidTo || null, settledAt: f.settledAt || null
@@ -599,6 +619,7 @@ const Factory = (() => {
       const meSnap = opts.fee ? await tx.get(db.collection("users").doc(uid)) : null;
       const now = Date.now(), made = {};
       let treasury = c.treasury + settle(f, now, dem, made);
+      if (typeof Sites !== "undefined") treasury = Sites.settle(f, now, made, treasury, { research: f.research, crew: (x) => crewMult(x, f), out: (x) => outMult(x, f) });
       treasury = settleContracts(f, t, treasury, contracts, made);
       treasury = lineUpkeep(f, now, treasury);
       settleJobs(f, now, jobs);
@@ -693,11 +714,12 @@ const Factory = (() => {
     return { msg: `✓ Cleared ${n.toLocaleString()} unmade units from line ${i + 1}; their materials are back in the warehouse.` };
   });
 
-  const startResearch = (key) => act((f, treasury, now) => {
+  const startResearch = (key) => act((f, treasury, now, c) => {
     const r = RESEARCH[key];
     if (f.research[key]) throw new Error(`${r.name} is already researched.`);
     if (f.project) throw new Error(`Your lab is busy with ${RESEARCH[f.project.key].name}. One project at a time.`);
     if (r.needs && !f.research[r.needs]) throw new Error(`Research ${RESEARCH[r.needs].name} first.`);
+    if (!researchFor(c.industry).includes(key)) throw new Error(`${c.industry} companies can't research that.`);
     if (treasury < r.cost) throw new Error(`${r.name} costs ${fmtCash(r.cost)}; the treasury has ${fmtCash(treasury)}.`);
     const baseMs = (r.hours * 3600000) / (f.research.labs ? 2 : 1);
     const ms = baseMs / researchSpeed(f);
@@ -727,12 +749,12 @@ const Factory = (() => {
   const assign = (id, lineId) => act((f, treasury, now) => {
     const s = f.staff.find((x) => x.id === id);
     if (!s) throw new Error("That person no longer works here.");
-    const line = f.lines.find((l) => l.id === lineId);
+    const line = f.lines.find((l) => l.id === lineId) || (f.sites || []).find((x) => x.id === lineId && x.builtAt);
     if (line && workersOn(f, line, true).filter((x) => x.id !== id).length >= MAX_WORKERS_PER_LINE)
       throw new Error(`A line takes at most ${MAX_WORKERS_PER_LINE} workers.`);
     if (!is(s, "worker")) throw new Error(`${s.name} doesn't work on lines.`);
     rebase(f, now, () => { s.line = line ? line.id : null; });
-    return { msg: line ? `✓ ${s.name} now works on line ${f.lines.indexOf(line) + 1}.` : `✓ ${s.name} is unassigned.` };
+    return { msg: line ? `✓ ${s.name} now works on ${f.lines.includes(line) ? `line ${f.lines.indexOf(line) + 1}` : "that site"}.` : `✓ ${s.name} is unassigned.` };
   });
 
   const train = (id) => act((f, treasury, now) => {
@@ -860,12 +882,17 @@ const Factory = (() => {
       k("Sales revenue", fmtCash(f.revenue), "all-time, into the treasury")
     );
     const mine = recipesFor(c.industry);
-    const ind = mk("p", "co-note", mine.length
+    const ind = mk("p", "co-note", siteInd(c.industry)
+      ? `${c.ticker} is ${aAn(c.industry)} ${c.industry.toLowerCase()} company. ${c.industry === "Mining" ? "It surveys deposits and runs mines that dig around the clock." : "It grows crops in fields, taps rubber on plantations and raises cattle in pens."}`
+      : mine.length
       ? `${c.ticker} is ${aAn(c.industry)} ${c.industry.toLowerCase()} company. Its lines can make ${mine.map((k) => ITEMS[k].name.toLowerCase()).join(", ")}.`
       : `${c.ticker}'s industry (${c.industry}) has nothing to make yet.`);
     const perHour = f.lines.reduce((a, l) => a + lineCostNow(l), 0);
     const nextBill = Math.max(1, Math.ceil(((f.upkeepPaidTo || Math.floor(Date.now() / HOUR) * HOUR) + HOUR - Date.now()) / 60000));
-    const costs = mk("p", "co-note", f.lines.length
+    const siteCost = (f.sites || []).reduce((a, x) => a + (typeof Sites !== "undefined" ? Sites.upkeepOf(x) : 0), 0);
+    const costs = mk("p", "co-note", siteInd(c.industry)
+      ? `Sites pay upkeep every hour from the treasury (see each one). Right now that's ${fmtCash(siteCost + perHour)}/hour${staffOf(f).length ? `, plus ${fmtCash(payrollPerHour(f))}/hour in wages` : ""}${siteCost + perHour ? ` · next bill in about ${nextBill} min` : ""}.`
+      : f.lines.length
       ? `Line upkeep: ${fmtCash(UPKEEP_IDLE)}/hour for each idle line, up to ${fmtCash(UPKEEP_BUSY)}/hour for each line running the whole hour, billed hourly from the treasury. Right now that's about ${fmtCash(perHour)}/hour${staffOf(f).length ? `, plus ${fmtCash(payrollPerHour(f))}/hour in wages` : ""} · next bill in about ${nextBill} min.`
       : `Each line costs ${fmtCash(UPKEEP_IDLE)}/hour sitting idle and up to ${fmtCash(UPKEEP_BUSY)}/hour running, billed hourly from the treasury.`);
     const stopped = f.lines.filter((l) => l.paused != null).length;
@@ -884,8 +911,14 @@ const Factory = (() => {
     const { f, dem } = projected();
     const can = iControl(), c = company();
     const allowed = c ? recipesFor(c.industry) : [];
-    g("fBuild").classList.toggle("hidden", !can || f.lines.length >= MAX_LINES);
+    // Mining and Farming: sites instead of lines (old lines keep going until their queues are done)
+    const sitesMode = !!c && siteInd(c.industry);
+    g("fLinesTitle").textContent = !sitesMode ? "Production lines" : c.industry === "Mining" ? "Mines" : "Fields, plantations and pens";
+    g("fSites").classList.toggle("hidden", !sitesMode);
+    if (sitesMode) Sites.render(g("fSites"), f, can, c, run);
+    g("fBuild").classList.toggle("hidden", !can || sitesMode || f.lines.length >= MAX_LINES);
     g("fBuild").textContent = `Build a production line (${fmtCash(LINE_COST)})`;
+    if (sitesMode && !f.lines.length) { box.replaceChildren(); return; }
     if (!f.lines.length) {
       box.replaceChildren(mk("div", "empty", can ? "No lines yet. Build one to start making things." : "This company hasn't built any lines."));
       return;
@@ -988,7 +1021,9 @@ const Factory = (() => {
     const box = g("fResearch");
     const { f } = projected();
     const can = iControl();
-    box.replaceChildren(...Object.entries(RESEARCH).map(([key, r]) => {
+    const c = company();
+    const keys = c ? researchFor(c.industry) : Object.keys(RESEARCH);
+    box.replaceChildren(...keys.map((key) => [key, RESEARCH[key]]).map(([key, r]) => {
       const row = mk("div", "f-res");
       const done = !!f.research[key];
       const active = f.project && f.project.key === key;
@@ -1016,6 +1051,7 @@ const Factory = (() => {
     tick();
   }
 
+  const siteLabel = (x, j) => `${x.kind === "mine" ? `${ITEMS[x.ore].name} mine` : x.kind === "field" ? "Field" : x.kind === "pen" ? "Cattle pen" : "Plantation"} ${j + 1}`;
   const stars = (n) => "★".repeat(n) + "☆".repeat(5 - n);
 
   function renderStaff() {
@@ -1050,7 +1086,8 @@ const Factory = (() => {
           sel.id = `fAssign${i}`;
           sel.setAttribute("aria-label", `Where ${sf.name} works`);
           const none = mk("option", null, "Not on a line"); none.value = "";
-          sel.append(none, ...f.lines.map((l, j) => { const o = mk("option", null, `Line ${j + 1} (${ITEMS[l.recipe].many})`); o.value = l.id; return o; }));
+          sel.append(none, ...f.lines.map((l, j) => { const o = mk("option", null, `Line ${j + 1} (${ITEMS[l.recipe].many})`); o.value = l.id; return o; }),
+            ...(f.sites || []).filter((x) => x.builtAt).map((x, j) => { const o = mk("option", null, siteLabel(x, j)); o.value = x.id; return o; }));
           sel.value = sf.line || "";
           sel.addEventListener("change", (e) => run(() => assign(sf.id, e.target.value || null)));
           acts.append(sel);
@@ -1155,6 +1192,14 @@ const Factory = (() => {
   function renderRecipes() {
     const { f: pf, dem } = st.factory ? projected() : { f: blank(), dem: {} };
     const c = company();
+    if (c && siteInd(c.industry)) {
+      const more = mk("details", "f-others");
+      more.append(mk("summary", null, "What other industries make"), ...INDUSTRIES.filter((i) => i !== c.industry && !siteInd(i)).map((i) => {
+        const p = mk("p", "co-note"); p.append(mk("b", null, `${i}: `), recipesFor(i).map((k) => ITEMS[k].name.toLowerCase()).join(", ")); return p;
+      }));
+      g("fRecipes").replaceChildren(...Sites.guide(c.industry), more);
+      return;
+    }
     const keys = c ? recipesFor(c.industry) : [];
     const rows = keys.map((k) => {
       const r = RECIPES[k];
@@ -1301,5 +1346,5 @@ const Factory = (() => {
   // For the contracts panel: run a change through the controller's factory save
   const actFor = (t, change, opts) => act(change, t, opts);
   const companies = () => st.companies;
-  return { init, signIn, signOut, upkeep, actFor, companies, deliver, payDue, room, MAX_CONTRACTS_PER_ACT, fmtDur, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, PRODUCTS, BASE_VALUE, supplierPrice, clone, blank, qtyName };
+  return { init, signIn, signOut, upkeep, actFor, companies, crewMult, workersOn, outMult, deliver, payDue, room, MAX_CONTRACTS_PER_ACT, fmtDur, RECIPES, ITEMS, RAW, GOODS, INDUSTRIES, PRODUCTS, BASE_VALUE, supplierPrice, clone, blank, qtyName };
 })();
