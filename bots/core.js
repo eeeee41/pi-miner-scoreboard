@@ -25,6 +25,13 @@
    valuation, sells into bids well over it, trades Pi around its recent
    price, and leaves a few orders on the books.
 
+   Selling patiently: a bot only lists a tenth of its shares at a time.
+   A sell order that sat a whole run without selling a single share comes
+   back 7% cheaper next run, but never below what the bot thinks the share
+   is worth. Bots don't list shares more than 25% above what players have
+   recently paid; if they value a share above that, they keep it for the
+   dividends instead.
+
    Keeping prices sane: every asset has a reference price, what players
    have recently paid (trades between two bots don't count) or, if players
    haven't traded it, the bots' average valuation. Bots only trade with
@@ -48,6 +55,8 @@
   const DEPTH = 10;                // order book rows each bot looks at
   const MAX_RESTING = 4;           // orders each bot leaves on the books
   const AVG_TRADES = 20;
+  const LIST_SHARE = 0.1;          // share of its holding a bot lists for sale at once
+  const MARKDOWN = 0.93;           // an unsold sell order comes back this much cheaper next run
 
   const BAND_LO = 0.8, BAND_HI = 1.25;   // bots trade with bots only within this range of the reference price
   const MEMORY = 72;                     // observations kept per company (about 3 days of hourly runs)
@@ -239,8 +248,10 @@
       });
     }
 
+    // Cancels every order the bot left last run. Returns what each one was: "TICKER:side" → { price, untouched }
     async function cancelAll(b) {
       const w = (await userRef(b.id).get()).data() || {};
+      const was = new Map();
       for (const path of w.openOrders || []) {
         await db.runTransaction(async (tx) => {
           const ref = db.doc(path);
@@ -250,6 +261,7 @@
           const asset = path.split("/")[1];
           const heldSnap = d && !isPi(asset) && d.side === "sell" ? await tx.get(holderRef(asset, b.id)) : null;
           if (!d || d.uid !== b.id || typeof d.p !== "number" || d.remaining <= 0) return;
+          was.set(`${asset}:${d.side}`, { price: d.price, untouched: !(d.filled > 0) });
           const me = meSnap.data() || {};
           tx.update(ref, { status: "cancelled", p: FieldValue.delete() });
           if (d.side === "buy") tx.update(userRef(b.id), { cash: (me.cash || 0) + d.remaining * d.price });
@@ -258,6 +270,7 @@
         });
       }
       await userRef(b.id).update({ openOrders: [] });
+      return was;
     }
 
     async function buyOffering(b, ticker, qty) {
@@ -318,7 +331,7 @@
     /* ---------- each bot ---------- */
     for (const b of bots) {
       const did = [];
-      await cancelAll(b);
+      const last = await cancelAll(b);
       const wallet = () => userRef(b.id).get().then((s) => s.data() || {});
       const holding = (t) => holderRef(t, b.id).get().then((s) => (s.exists && s.data().shares) || 0);
       const resting = [];
@@ -335,7 +348,14 @@
         const value = shareValue(b, c, f);          // cents per share, from expected dividends
         let bid = Math.floor(value * b.buyAt);
         if (ref) bid = Math.min(bid, Math.floor(ref * BAND_HI));
-        const ask = Math.max(1, Math.ceil(value * b.sellAt), ref ? Math.ceil(ref * BAND_LO) : 1);
+        // Asking price: well over its valuation, cheaper again if last run's order didn't sell, never under the
+        // valuation, and never more than 25% over what players pay (worth more than that to it: it holds)
+        const worth = Math.max(1, Math.ceil(value));
+        let ask = Math.max(1, Math.ceil(value * b.sellAt), ref ? Math.ceil(ref * BAND_LO) : 1);
+        const prev = last.get(`${c.ticker}:sell`);
+        if (prev && prev.untouched) ask = Math.min(ask, Math.max(worth, Math.floor(prev.price * MARKDOWN)));
+        let hold = false;
+        if (ref && ask > ref * BAND_HI) { if (worth > ref * BAND_HI) hold = true; else ask = Math.floor(ref * BAND_HI); }
         const cap = Math.floor(MAX_STAKE * c.shares);
         let held = await holding(c.ticker);
         const w = await wallet();
@@ -364,9 +384,9 @@
         // Orders to leave on the book (best value first)
         if (bid >= 1 && held < cap && sideTaken.get(c.ticker) !== "sell")
           resting.push({ asset: c.ticker, ref, side: "buy", price: bid, qty: Math.min(cap - held, Math.floor(budget / bid)), score: value / Math.max(1, bestAsk || bid) });
-        // Offer half for sale; the other half stays put earning dividends (shares in a sell order don't)
-        if (held > 0 && sideTaken.get(c.ticker) !== "buy")
-          resting.push({ asset: c.ticker, ref, side: "sell", price: ask, qty: Math.ceil(held / 2), score: 1 });
+        // Offer a tenth for sale; the rest stays put earning dividends (shares in a sell order don't)
+        if (held > 0 && !hold && sideTaken.get(c.ticker) !== "buy")
+          resting.push({ asset: c.ticker, ref, side: "sell", price: ask, qty: Math.max(1, Math.ceil(held * LIST_SHARE)), score: 1 });
       }
 
       // Pi coin pays no dividend: bots just trade it around its reference price
