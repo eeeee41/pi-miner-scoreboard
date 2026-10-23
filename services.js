@@ -325,7 +325,7 @@ const Services = (() => {
       }
       if (s.last) k.append(mk("div", "f-status", `Last: ${s.last.name} · paid ${fmtCash(s.last.pay)}${s.last.late ? " (late: half)" : ""}`));
       k.append(status(s));
-      if (can) { const row = mk("div", "co-form"); row.append(button("Close office", () => Sites.close(s.id))); k.append(row); }
+      if (can) { const row = mk("div", "co-form"); row.append(Sites.closeButton(s.id, "Close office")); k.append(row); }
       return k;
     }
     if (s.kind === "app") {
@@ -344,7 +344,7 @@ const Services = (() => {
         const row = mk("div", "co-form"), p = field(`sAppPrice-${s.id}`, "Price ($ a day)", (s.price / 100).toFixed(2));
         row.append(p.l, button("Set price", () => { const v = cents(p.inp.value); if (!(v >= 1)) throw new Error("Enter a price."); return setFields(s.id, { price: v }, `✓ ${s.name} now costs ${fmtCash(v)} a day.`); }));
         if (s.version && !(s.devLeft > 0)) row.append(button(`Ship an update · ${fmtCash(COST.update)}`, () => shipUpdate(s.id)));
-        row.append(button("Shut down app", () => Sites.close(s.id)));
+        row.append(Sites.closeButton(s.id, "Shut down app"));
         k.append(row, mk("p", "co-note", `Nobody pays ${fmtCash(APP.maxPrice)} a day; half as many subscribe at half that. The most money is usually around ${fmtCash(APP.maxPrice / 2)}.`));
       }
       return k;
@@ -363,7 +363,7 @@ const Services = (() => {
         sel.replaceChildren(Object.assign(mk("option", null, `Grid · ${fmtCash(800)}/MWh`), { value: "" }), ...sellers.map((x) => Object.assign(mk("option", null, `${x.ticker} · ${fmtCash(x.tariff)}/MWh`), { value: x.ticker })));
         sel.value = s.powerFrom && sellers.some((x) => x.ticker === s.powerFrom) ? s.powerFrom : "";
         sel.addEventListener("change", () => runFn(() => setFields(s.id, { powerFrom: sel.value || null }, `✓ Buying power from ${sel.value || "the grid"}.`)));
-        row2.append(sel, button("Close data centre", () => Sites.close(s.id)));
+        row2.append(sel, Sites.closeButton(s.id, "Close data centre"));
         k.append(row, row2, mk("p", "co-note", `Each server hosts ${research.scaling ? 8 : DC.perServer} customers and uses ${DC.kwh} kWh an hour. Nobody pays ${fmtCash(DC.maxPrice)} a day. Closing it loses the servers: take them out first.`));
       }
       return k;
@@ -378,7 +378,7 @@ const Services = (() => {
       if (can) {
         const row = mk("div", "co-form"), p = field(`sShelf-${s.id}`, `Shelf price (usually ${fmtCash(st.ref)})`, (s.price / 100).toFixed(2));
         row.append(p.l, button("Set price", () => { const v = cents(p.inp.value); if (!(v >= 1)) throw new Error("Enter a price."); return setFields(s.id, { price: v }, `✓ ${item.name} now sell for ${fmtCash(v)}.`); }),
-          button("Close store", () => Sites.close(s.id)));
+          Sites.closeButton(s.id, "Close store"));
         k.append(row, mk("p", "co-note", `Nobody buys at ${fmtCash(storeMax(s, research))}; the most money is usually around half that, as long as the shelves stay stocked.`));
       }
       return k;
@@ -395,7 +395,7 @@ const Services = (() => {
           const dr = Math.round(Number(d.inp.value) * 100), lr = Math.round(Number(l.inp.value) * 100);
           if (!(dr >= 0 && dr <= 200 && lr >= 1 && lr <= 1000)) throw new Error("Deposit rates go from 0 to 2% a day, loan rates from 0.01% to 10%.");
           return setFields(s.id, { depRate: dr, loanRate: lr }, `✓ Paying ${pctDay(dr)} on deposits, charging ${pctDay(lr)} on loans.`);
-        }), button("Close branch", () => Sites.close(s.id)));
+        }), Sites.closeButton(s.id, "Close branch"));
         k.append(row, mk("p", "co-note", `Higher deposit rates bring in more money to lend (up to twice as much at ${pctDay(BANK.depRef * BANK.depMax)}). Fewer people borrow as the loan rate rises (none at ${pctDay(BANK.loanMax)}), and more of them can't pay it back.`));
       }
       return k;
@@ -408,7 +408,7 @@ const Services = (() => {
       if (can) {
         const row = mk("div", "co-form"), p = field(`sPrem-${s.id}`, "Premium ($ a day)", (s.premium / 100).toFixed(2));
         row.append(p.l, button("Set premium", () => { const v = cents(p.inp.value); if (!(v >= 1)) throw new Error("Enter a premium."); return setFields(s.id, { premium: v }, `✓ Policies now cost ${fmtCash(v)} a day.`); }),
-          button("Close office", () => Sites.close(s.id)));
+          Sites.closeButton(s.id, "Close office"));
         k.append(row, mk("p", "co-note", `Nobody buys at ${fmtCash(INS.maxPremium)} a day. Each policy costs about ${fmtCash(Math.round(INS.claimOdds * INS.claim * (research.actuary ? 0.75 : 1)))} a day in claims on average, but claims come in lumps, and about one hour in a hundred a storm brings ten times as many: keep Cash in the treasury.`));
       }
       return k;

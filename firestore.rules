@@ -293,6 +293,9 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['inventory', 'lines', 'sites', 'carsSold', 'revenue', 'research', 'project',
                                                     'staff', 'wagesPaidTo', 'news', 'upkeepPaidTo', 'settledAt', 'updatedAt'])
           && (!('sites' in request.resource.data) || (request.resource.data.sites is list && request.resource.data.sites.size() <= 10))
+          // At most one site goes per save (closing one), so an out-of-date page that doesn't know about
+          // sites can't wipe them all by saving without them
+          && (resource == null || request.resource.data.get('sites', []).size() >= resource.data.get('sites', []).size() - 1)
           && (!('staff' in request.resource.data) || (request.resource.data.staff is list && request.resource.data.staff.size() <= 40))
           && request.resource.data.inventory is map
           && request.resource.data.lines is list && request.resource.data.lines.size() <= 10

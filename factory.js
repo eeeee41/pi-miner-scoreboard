@@ -646,6 +646,7 @@ const Factory = (() => {
 
   // Every factory change: re-read, catch up on finished units and bills, apply the change, save.
   async function act(change, t = st.ticker, opts = {}) {
+    if (typeof Economy !== "undefined" && Economy.isStale && Economy.isStale()) throw new Error("A new version of the game is out. Reload the page to keep playing.");
     const uid = user.uid;
     const ids = [...new Set([...(await contractIds(t).catch(() => [])), ...(opts.contracts || [])])];
     // Job postings that need attention (the Employees panel already follows the open company's live)

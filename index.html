@@ -74,6 +74,9 @@
     padding: 14px 18px; margin-bottom: 20px; font-size: 14px;
   }
   .banner strong { color: #fff; }
+  .banner.warn { position: sticky; top: 8px; z-index: 60; background: #3a1f1f; }
+  .banner .btn-primary { width: auto; padding: 6px 14px; margin-left: 8px; }
+  .btn-ghost.danger { border-color: rgba(255, 107, 107, 0.6); color: #ff8f8f; }
 
   /* ---------- Login ---------- */
   .login-card {
@@ -404,6 +407,10 @@
 </header>
 
 <main>
+  <div class="banner warn hidden" id="staleBanner" role="alert">
+    <strong>A new version of Pi Miner is out.</strong> This page has stopped saving so it can't overwrite
+    anything with old rules. <button class="btn-primary" id="staleReload" type="button">Reload now</button>
+  </div>
   <div class="banner hidden" id="configBanner">
     <strong>Firebase isn't configured yet.</strong> Open <code>index.html</code>, find the
     <code>firebaseConfig</code> block near the bottom, and paste in the values from
@@ -838,22 +845,22 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <!-- Game scripts. Bump ?v= on every release so browsers never mix old and new files. -->
 <!-- Phase 1: wallets and the Pi coin exchange -->
-<script src="economy.js?v=20261023-0700"></script>
+<script src="economy.js?v=20261023-0800"></script>
 <!-- Phase 2: companies, shares and dividends -->
-<script src="companies.js?v=20261023-0700"></script>
+<script src="companies.js?v=20261023-0800"></script>
 <!-- Phase 3: production -->
-<script src="services.js?v=20261023-0700"></script>
-<script src="sites.js?v=20261023-0700"></script>
-<script src="factory.js?v=20261023-0700"></script>
+<script src="services.js?v=20261023-0800"></script>
+<script src="sites.js?v=20261023-0800"></script>
+<script src="factory.js?v=20261023-0800"></script>
 <!-- Phase 4: marketplace for goods -->
-<script src="contracts.js?v=20261023-0700"></script>
-<script src="work.js?v=20261023-0700"></script>
-<script src="bank.js?v=20261023-0700"></script>
-<script src="rig.js?v=20261023-0700"></script>
-<script src="crime.js?v=20261023-0700"></script>
-<script src="market.js?v=20261023-0700"></script>
+<script src="contracts.js?v=20261023-0800"></script>
+<script src="work.js?v=20261023-0800"></script>
+<script src="bank.js?v=20261023-0800"></script>
+<script src="rig.js?v=20261023-0800"></script>
+<script src="crime.js?v=20261023-0800"></script>
+<script src="market.js?v=20261023-0800"></script>
 
 <!-- Mining on the shared Pi blockchain + sign-in (loads last) -->
-<script src="miner.js?v=20261023-0700"></script>
+<script src="miner.js?v=20261023-0800"></script>
 </body>
 </html>

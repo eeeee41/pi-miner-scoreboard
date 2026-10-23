@@ -334,7 +334,7 @@ const Economy = (() => {
 
   // auto: called by the timer (the expiry scans then run at most once an hour); called directly, it does everything
   async function upkeep(auto) {
-    if (!user) return;
+    if (!user || stale) return;
     const scan = auto !== true || Date.now() - lastScan >= SCAN_MS;
     if (scan) { lastScan = Date.now(); try { await settleExpired(); } catch (err) { console.warn("Upkeep:", err); } }
     if (typeof Factory !== "undefined") await Factory.upkeep().catch((err) => console.warn("Factory upkeep:", err));   // bank car sales first
@@ -721,8 +721,33 @@ const Economy = (() => {
   }
 
   /* ---------- public API ---------- */
+  /* ---------- out-of-date pages ----------
+     A page left open keeps running the code it loaded with. When a newer version is published, an old
+     page could save data in an old shape (that's how sites got wiped once), so the page checks every
+     10 minutes, and whenever you come back to the tab, and stops saving if it's out of date. */
+  const myVersion = (() => { const s = document.querySelector('script[src*="economy.js"]'); const m = s && /[?&]v=([\w-]+)/.exec(s.src); return m ? m[1] : null; })();
+  let stale = false;
+  async function checkVersion() {
+    if (!myVersion || stale || location.protocol === "file:") return;
+    try {
+      const r = await fetch(`${location.pathname}?check=${Date.now()}`, { cache: "no-store" });
+      if (!r.ok) return;
+      const m = /economy\.js\?v=([\w-]+)/.exec(await r.text());
+      if (m && m[1] !== myVersion) {
+        stale = true;
+        g("staleBanner").classList.remove("hidden");
+        clearInterval(upkeepTimer);
+      }
+    } catch (e) { /* offline: try again later */ }
+  }
+  const isStale = () => stale;
+
   function init(firebaseNs, firestore) {
     fb = firebaseNs; db = firestore;
+    g("staleReload").addEventListener("click", () => location.reload());
+    setInterval(checkVersion, 10 * 60 * 1000);
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkVersion(); });
+    setTimeout(checkVersion, 60 * 1000);
     for (const t of TABS) g(`tabBtn-${t}`).addEventListener("click", () => showTab(t));
     window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
     showTab(location.hash.slice(1));
@@ -803,5 +828,5 @@ const Economy = (() => {
   }
   function setShareValue(v) { st.shareValue = v; renderWallet(); }
 
-  return { init, signIn, signOut, setMarkets, openMarket, setShareValue, upkeep, fmtCash, errText, payFee, FEE };
+  return { init, signIn, signOut, setMarkets, openMarket, setShareValue, upkeep, fmtCash, errText, payFee, FEE, isStale, checkVersion };
 })();

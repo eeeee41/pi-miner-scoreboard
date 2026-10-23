@@ -499,6 +499,21 @@ const Sites = (() => {
   const pct = (x) => `${Math.round(x * 100)}%`;
   let runFn = null;
   const button = (label, fn, cls = "btn-ghost") => { const b = mk("button", cls, label); b.addEventListener("click", () => runFn(fn)); return b; };
+  // Closing a site can't be undone, so it takes two clicks. Which button is waiting for its second click is
+  // kept here, not in the button, because the cards are redrawn whenever the factory changes.
+  const CONFIRM = "Click again to close it for good";
+  const armedClose = { id: null, at: 0 };
+  const closeArmed = (id) => armedClose.id === id && Date.now() - armedClose.at < 5000;
+  function closeButton(id, label, fn = () => close(id)) {
+    const b = mk("button", "btn-ghost" + (closeArmed(id) ? " danger" : ""), closeArmed(id) ? CONFIRM : label);
+    b.addEventListener("click", () => {
+      if (closeArmed(id)) { armedClose.id = null; runFn(fn); return; }
+      Object.assign(armedClose, { id, at: Date.now() });
+      b.textContent = CONFIRM; b.classList.add("danger");
+      setTimeout(() => { if (b.isConnected && !closeArmed(id)) { b.textContent = label; b.classList.remove("danger"); } }, 5100);
+    });
+    return b;
+  }
 
   function crewChip(s, f) {
     const crew = Factory.workersOn(f, s), out = Factory.outMult(s, f);
@@ -520,7 +535,7 @@ const Sites = (() => {
         const row = mk("div", "co-form");
         row.append(button(`Open-pit mine · ${fmtCash(COST.pit)} (reaches ${(Math.floor(s.size * PIT_REACH)).toLocaleString()})`, () => openMine(s.id, "pit")),
           button(`Shaft mine · ${fmtCash(COST.shaft)} (all ${s.size.toLocaleString()}, ${research.deep1 ? 1 : DIG_HOURS} h to dig)`, () => openMine(s.id, "shaft")),
-          button("Forget it", () => close(s.id)));
+          closeButton(s.id, "Forget it"));
         card.append(row);
       }
       return card;
@@ -534,7 +549,7 @@ const Sites = (() => {
       : digging ? `Digging the shaft: producing in ${Factory.fmtDur((s.builtAt + digMs(research) - t) / 1000)}`
         : `${Math.round(rate).toLocaleString()} ${many(s.ore)} an hour${research.refine1 ? " (+25% from refining)" : ""} · upkeep ${fmtCash(upkeepOf(s))}/hour`),
       bar, mk("div", "f-status", `${done.toLocaleString()} of ${cap.toLocaleString()} dug${s.method === "pit" ? ` (open pits reach 60% of the ${s.size.toLocaleString()})` : ""}${s.paused ? " · stopped: upkeep unpaid" : ""}`));
-    if (can) { const row = mk("div", "co-form"); row.append(button("Close mine", () => close(s.id))); card.append(row); }
+    if (can) { const row = mk("div", "co-form"); row.append(closeButton(s.id, "Close mine")); card.append(row); }
     return card;
   }
 
@@ -558,7 +573,7 @@ const Sites = (() => {
         const auto = mk("label", "check-row"); const box = mk("input"); box.type = "checkbox"; box.id = `sAuto-${s.id}`; auto.append(box, mk("span", null, "Keep planting"));
         row.append(sel, auto, button("Plant", () => plant(s.id, sel.value, box.checked), "btn-primary buy"));
       } else row.append(button(s.auto ? "Stop replanting" : "Keep planting", () => setAuto(s.id, !s.auto)));
-      row.append(button("Close field", () => close(s.id)));
+      row.append(closeButton(s.id, "Close field"));
       card.append(row);
     }
     return card;
@@ -571,7 +586,7 @@ const Sites = (() => {
     card.append(head, mk("div", "f-recipe-text", t < ready
       ? `Trees maturing: rubber starts in ${Factory.fmtDur((ready - t) / 1000)}`
       : `${Math.round(RUBBER_RATE * Factory.crewMult(s, f)).toLocaleString()} rubber an hour · upkeep ${fmtCash(UPKEEP.plantation)}/hour${s.paused ? " · stopped: upkeep unpaid" : ""}`));
-    if (can) { const row = mk("div", "co-form"); row.append(button("Close plantation", () => close(s.id))); card.append(row); }
+    if (can) { const row = mk("div", "co-form"); row.append(closeButton(s.id, "Close plantation")); card.append(row); }
     return card;
   }
 
@@ -589,14 +604,14 @@ const Sites = (() => {
       l.htmlFor = inp.id; l.append(mk("span", null, "Head of cattle"), inp);
       row.append(l, button("Move in", () => penMove(s.id, Math.floor(Number(inp.value)), true)), button("Send to warehouse", () => penMove(s.id, Math.floor(Number(inp.value)), false)));
       card.append(row);
-      const row2 = mk("div", "co-form"); row2.append(button("Close pen", () => closePen(s.id))); card.append(row2);
+      const row2 = mk("div", "co-form"); row2.append(closeButton(s.id, "Close pen", () => closePen(s.id))); card.append(row2);
     }
     return card;
   }
 
   const progress = (x) => { const bar = mk("div", "progress"); const fill = mk("div"); fill.style.width = Math.max(0, Math.min(100, x * 100)) + "%"; bar.append(fill); return bar; };
   const onOff = (s) => button(s.on ? "Switch off" : "Switch on", () => toggle(s.id));
-  const closeRow = (s, label) => { const row = mk("div", "co-form"); row.append(button(label, () => close(s.id))); return row; };
+  const closeRow = (s, label) => { const row = mk("div", "co-form"); row.append(closeButton(s.id, label)); return row; };
 
   function plantCard(s, f, can) {
     const card = mk("div", "f-line"), head = mk("div", "f-line-head");
@@ -617,7 +632,7 @@ const Sites = (() => {
     }
     card.append(mk("div", "f-recipe-text", text),
       mk("div", "f-status", `${(s.made || 0).toLocaleString()} MWh made · sold to everyday buyers as it's made (miners who bought from you get theirs first) · upkeep ${fmtCash(upkeepOf(s))}/hour${s.paused ? " · stopped: upkeep unpaid" : ""}`));
-    if (can) { const row = mk("div", "co-form"); row.append(onOff(s), button("Close plant", () => close(s.id))); card.append(row); }
+    if (can) { const row = mk("div", "co-form"); row.append(onOff(s), closeButton(s.id, "Close plant")); card.append(row); }
     return card;
   }
 
@@ -631,7 +646,7 @@ const Sites = (() => {
     if (can) {
       const row = mk("div", "co-form");
       if (research.frack) row.append(button(`Re-frack · ${fmtCash(COST.refrack)}`, () => refrack(s.id)));
-      row.append(button("Cap the well", () => close(s.id)));
+      row.append(closeButton(s.id, "Cap the well"));
       card.append(row);
     }
     return card;
@@ -650,7 +665,7 @@ const Sites = (() => {
       sel.replaceChildren(...Object.entries(REFINERY.modes).map(([k, x]) => { const o = mk("option", null, `${x.name}: ${x.gasoline} gasoline + ${x.plastic} plastic per ${x.oil} barrels`); o.value = k; return o; }));
       sel.value = s.mode;
       sel.addEventListener("change", () => runFn(() => setMode(s.id, sel.value)));
-      row.append(sel, onOff(s), button("Close refinery", () => close(s.id)));
+      row.append(sel, onOff(s), closeButton(s.id, "Close refinery"));
       card.append(row);
     }
     return card;
@@ -685,7 +700,7 @@ const Sites = (() => {
         sel.addEventListener("change", () => runFn(() => setFurnace(s.id, { powerFrom: sel.value })));
         row.append(sel);
       }
-      row.append(button("Close furnace", () => close(s.id)));
+      row.append(closeButton(s.id, "Close furnace"));
       card.append(row);
     }
     return card;
@@ -776,6 +791,6 @@ const Sites = (() => {
     "Steel and metals": "It smelts steel and glass in batch furnaces, and can mine its own iron ore, coal and sand."
   })[ind] || "";
 
-  return { INDUSTRIES, RESEARCH, isSiteIndustry, settle, upkeepOf, pauseAll, resumeAll, render, guide, builds, close, sells, sellsFor, powerSuppliers, title, blurb,
+  return { INDUSTRIES, RESEARCH, isSiteIndustry, settle, upkeepOf, pauseAll, resumeAll, render, guide, builds, close, closeButton, sells, sellsFor, powerSuppliers, title, blurb,
     CROPS, ORES, COST, UPKEEP, PLANTS, WELL, REFINERY, FURNACES, SURVEYS, MAX_SITES, sunAt };
 })();
