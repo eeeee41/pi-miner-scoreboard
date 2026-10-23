@@ -6,9 +6,10 @@
      lines      [ { id, recipe, queued, startedAt, made } ]
      carsSold, revenue              running totals
 
-   • Each company's industry decides what its lines can make: mines dig ore,
-     farms grow crops and raise cattle, energy companies drill oil, food
-     companies turn crops into bread and burgers, and so on. Anything else
+   • Each company's industry decides what its lines can make: food companies
+     turn crops into bread and burgers, car makers build cars, and so on.
+     Mining, Farming, Energy, and Steel and metals run sites instead
+     (mines, fields, power plants, furnaces: sites.js). Anything else
      comes from other companies on the Market, or from game suppliers
      (raw materials at list price, made goods at a 60% markup).
    • Wholesalers buy anything in a warehouse at once, for half its value.
@@ -76,21 +77,22 @@ const Factory = (() => {
   // What each industry can make. A company's lines only run its own industry's recipes; everything
   // else it needs comes from other companies on the Market, or from suppliers at their prices.
   const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance", "Security"];
-  // Mining and Farming companies run sites instead of lines (sites.js); these recipes are for the others
-  const MINES = ["Steel and metals"], FARMS = ["Food"];
+  // Mining, Farming, Energy, and Steel and metals run sites instead of lines (sites.js); these recipes are for the others
+  const MINES = [], FARMS = ["Food"];
   // inputs → `yields` units (default 1) every `secs`; `how` = where it comes from when it needs no inputs;
   // `sellsFor` = everyday buyers take it the moment it's made, for this many cents
   const RECIPES = {
     iron:        { inputs: {}, secs: 20, ind: MINES, how: "mined" },
-    coal:        { inputs: {}, secs: 15, ind: [...MINES, "Energy"], how: "mined" },
+    coal:        { inputs: {}, secs: 15, ind: MINES, how: "mined" },
     copper:      { inputs: {}, secs: 30, ind: MINES, how: "mined" },
     sand:        { inputs: {}, secs: 10, ind: MINES, how: "dug from a quarry" },
-    steel:       { inputs: { iron: 2, coal: 1 },       secs: 60,  ind: ["Steel and metals", "Cars"] },
-    glass:       { inputs: { sand: 2, coal: 1 },       secs: 45,  ind: ["Steel and metals", "Cars", "Electronics"] },
-    oil:         { inputs: {}, secs: 30, ind: ["Energy"], how: "drilled" },
-    plastic:     { inputs: { oil: 1 }, secs: 30, yields: 2, ind: ["Energy"] },
-    gasoline:    { inputs: { oil: 2 }, secs: 60, ind: ["Energy"], sellsFor: 900 },
-    power:       { inputs: { coal: 3 }, secs: 30, ind: ["Energy"], sellsFor: 550 },
+    steel:       { inputs: { iron: 2, coal: 1 },       secs: 60,  ind: ["Cars"] },                 // and Steel and metals furnaces
+    glass:       { inputs: { sand: 2, coal: 1 },       secs: 45,  ind: ["Cars", "Electronics"] },  // and Steel and metals kilns
+    // Energy runs oil wells, refineries and power plants (sites.js)
+    oil:         { inputs: {}, secs: 30, ind: [], how: "drilled" },
+    plastic:     { inputs: { oil: 1 }, secs: 30, yields: 2, ind: [] },
+    gasoline:    { inputs: { oil: 2 }, secs: 60, ind: [], sellsFor: 900 },
+    power:       { inputs: { coal: 3 }, secs: 30, ind: [], sellsFor: 550 },
     wheat:       { inputs: {}, secs: 20, yields: 2, ind: FARMS, how: "grown" },
     vegetables:  { inputs: {}, secs: 15, yields: 2, ind: FARMS, how: "grown" },
     cotton:      { inputs: {}, secs: 25, ind: [], how: "grown" },                    // Farming fields (sites.js)
@@ -455,7 +457,9 @@ const Factory = (() => {
   // made, at the price recent sales across the game allow; `dem` holds that shared demand and is
   // updated in place. Also notes how long each line ran, for upkeep. Returns the Cash the sales brought in.
   // grid.kwh: electricity this company has already sold to miners and still has to deliver (Energy, rig.js)
-  function settle(f, now, dem = {}, made = {}, grid = { kwh: 0 }) {
+  // money: { treasury, buyPower } for the sites (sites.js), which can spend on seed, fuel and power;
+  // the treasury they leave is put back in money.treasury
+  function settle(f, now, dem = {}, made = {}, grid = { kwh: 0 }, money = null) {
     let income = 0;
     if (f.project && now >= f.project.endsAt) {          // finished research
       f.research[f.project.key] = true;
@@ -481,6 +485,13 @@ const Factory = (() => {
       line.made = (line.made || 0) + n * each;
       line.startedAt = line.queued ? line.startedAt + n * per : null;
     }
+    if (typeof Sites !== "undefined" && (f.sites || []).length) {
+      const m = money || { treasury: 0 };
+      m.treasury = Sites.settle(f, now, made, m.treasury, {
+        research: f.research, crew: (x) => crewMult(x, f), out: (x) => outMult(x, f),
+        sell: (t, k, n) => { if (n > 0) { sales.push({ t, k, n }); f.carsSold += n; } },
+        buyPower: m.buyPower || gridPower });
+    }
     // Sell in the order things were made, so recent sales by anyone keep pushing the price down
     sales.sort((x, y) => x.t - y.t);
     for (const e of sales) {
@@ -502,6 +513,23 @@ const Factory = (() => {
     }
     f.settledAt = now;
     return income;
+  }
+
+  // Electricity bought by a site (an arc furnace): the grid's price, and that money leaves the game
+  // budget: what the treasury can spend; null back means it can't afford it (nothing is recorded)
+  const gridPower = (from, kwh, budget = Infinity) => { const cost = Math.ceil((kwh * GRID_TARIFF) / 1000); return cost > budget ? null : { cost, from: null }; };
+  const GRID_TARIFF = 800;   // cents per MWh, as rig.js
+  // Power bought from Energy companies during one save: { ticker: { c, kwh, cost } }, read in the transaction
+  function powerBuyer(suppliers) {
+    return (from, kwh, budget = Infinity) => {
+      const s = from && suppliers[from];
+      const max = typeof Rig !== "undefined" ? Rig.MAX_OWED_KWH : 100000;
+      if (!s || !(s.c.tariff > 0) || s.c.industry !== "Energy" || (s.c.powerOwed || 0) + s.kwh >= max) return gridPower(null, kwh, budget);
+      const cost = Math.ceil((kwh * s.c.tariff) / 1000);
+      if (cost > budget) return null;
+      s.kwh += kwh; s.cost += cost;
+      return { cost, from };
+    };
   }
 
   const demandRef = (k) => db.collection("demand").doc(k);
@@ -610,7 +638,8 @@ const Factory = (() => {
       const before = JSON.stringify(snap.exists ? clone(snap.data()) : blank());
       // Running time is worked out again from the last save, so it alone isn't worth a write
       // The shared demand for whatever these lines might sell
-      const selling = [...new Set(f.lines.filter((l) => l.queued && RECIPES[l.recipe].sellsFor).map((l) => l.recipe))];
+      const selling = [...new Set([...f.lines.filter((l) => l.queued && RECIPES[l.recipe].sellsFor).map((l) => l.recipe),
+        ...(typeof Sites !== "undefined" ? Sites.sells(f) : [])])];
       const dem = {};
       for (const k of selling) { const d = await tx.get(demandRef(k)); dem[k] = d.exists ? { ...d.data() } : { load: 0, at: 0 }; }
       const contracts = [];
@@ -623,12 +652,20 @@ const Factory = (() => {
         const d = await tx.get(jobsCol().doc(id));
         if (d.exists) jobs.push({ id, ref: d.ref, data: { ...d.data() }, dirty: false });
       }
+      // Energy companies this company's arc furnaces buy power from
+      const suppliers = {};
+      for (const k of typeof Sites !== "undefined" ? Sites.powerSuppliers(f) : []) {
+        if (k === t) continue;
+        const d = await tx.get(companyRef(k));
+        if (d.exists) suppliers[k] = { c: d.data(), kwh: 0, cost: 0 };
+      }
       // Paid actions cost a Pi fee from the player's wallet
       const meSnap = opts.fee ? await tx.get(db.collection("users").doc(uid)) : null;
       const now = Date.now(), made = {};
       const grid = { kwh: c.powerOwed || 0 };
-      let treasury = c.treasury + settle(f, now, dem, made, grid);
-      if (typeof Sites !== "undefined") treasury = Sites.settle(f, now, made, treasury, { research: f.research, crew: (x) => crewMult(x, f), out: (x) => outMult(x, f) });
+      const money = { treasury: c.treasury, buyPower: powerBuyer(suppliers) };
+      const income = settle(f, now, dem, made, grid, money);
+      let treasury = money.treasury + income;
       treasury = settleContracts(f, t, treasury, contracts, made);
       treasury = lineUpkeep(f, now, treasury);
       settleJobs(f, now, jobs);
@@ -636,18 +673,21 @@ const Factory = (() => {
       treasury = payroll(f, now, treasury, credits);
       settleJobs(f, now, jobs);                 // anyone who just quit for lack of pay
       resume(f, now, treasury);
-      const ctx = { contracts, created: [], sets: [] };
+      const ctx = { contracts, created: [], sets: [], buyPower: money.buyPower };
       const res = change ? change(f, treasury, now, c, ctx) || {} : {};
       if (res.treasury != null) treasury = res.treasury;
       treasury = settleContracts(f, t, treasury, contracts, made);   // collect anything the change freed up (a refund, a delivery)
       settleJobs(f, now, jobs);                 // someone the change let go
       resume(f, now, treasury);
-      if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury && grid.kwh === (c.powerOwed || 0) && !contracts.some((k) => k.dirty) && !jobs.some((k) => k.dirty)) return "";   // nothing to save
+      const bought = Object.entries(suppliers).filter(([, s]) => s.kwh > 0);
+      if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury && grid.kwh === (c.powerOwed || 0) && !bought.length && !contracts.some((k) => k.dirty) && !jobs.some((k) => k.dirty)) return "";   // nothing to save
       if (treasury < 0) throw new Error(`The treasury only has ${fmtCash(c.treasury)}.`);
       if (meSnap) tx.update(meSnap.ref, { coins: Economy.payFee(tx, meSnap.data() || {}, opts.fee === true ? "That" : opts.fee) });
       tx.set(factoryRef(t), { ...f, updatedAt: fb.firestore.FieldValue.serverTimestamp() });
       if (grid.kwh !== (c.powerOwed || 0)) tx.update(companyRef(t), { treasury, powerOwed: grid.kwh });
       else if (treasury !== c.treasury) tx.update(companyRef(t), { treasury });
+      // Power bought from other Energy companies: paid into their treasuries, and their plants owe it
+      for (const [k, s] of bought) tx.update(companyRef(k), { treasury: s.c.treasury + s.cost, powerOwed: (s.c.powerOwed || 0) + s.kwh });
       for (const [k, d] of Object.entries(dem)) if (d.touched) tx.set(demandRef(k), { load: d.load, at: Math.round(d.at) });
       for (const k of contracts) if (k.dirty) tx.set(k.ref, { ...k.data, updatedAt: now });
       for (const d of ctx.created) tx.set(contractsCol().doc(), { ...d, createdAt: fb.firestore.FieldValue.serverTimestamp(), updatedAt: now });
@@ -840,14 +880,18 @@ const Factory = (() => {
   function projected() {
     const f = addFixedStaff(clone(st.factory || blank()), st.ticker);
     const dem = JSON.parse(JSON.stringify(st.demand));
-    const income = settle(f, Date.now(), dem);
+    const c = company();
+    const m = { treasury: c ? c.treasury : 0 };
+    // Sales just made, less anything sites spent catching up (seed, fuel bought with power)
+    const income = settle(f, Date.now(), dem, {}, { kwh: (c && c.powerOwed) || 0 }, m) + m.treasury - (c ? c.treasury : 0);
     return { f, income, dem };
   }
 
   // Live game-wide demand for everything this company sells or could sell
   function watchDemand() {
     const c = company();
-    const keys = [...new Set([...(c ? recipesFor(c.industry) : []), ...((st.factory && st.factory.lines) || []).map((l) => l.recipe)])]
+    const keys = [...new Set([...(c ? recipesFor(c.industry) : []), ...((st.factory && st.factory.lines) || []).map((l) => l.recipe),
+      ...(c && typeof Sites !== "undefined" ? Sites.sellsFor(c.industry) : [])])]
       .filter((k) => RECIPES[k] && RECIPES[k].sellsFor).sort();
     const key = keys.join(",");
     if (!db || !user || key === st.demandKey) return;
@@ -887,13 +931,15 @@ const Factory = (() => {
     const k = (label, value, sub) => { const d = mk("div", "kpi"); d.append(mk("span", "k", label), mk("b", null, value)); if (sub) d.append(mk("span", "ks", sub)); return d; };
     kpis.append(
       k("Treasury", fmtCash(c.treasury + income), income ? `includes ${fmtCash(income)} from sales just made` : "pays for materials and lines"),
-      k("Production lines", `${f.lines.length} / ${MAX_LINES}`, `${f.lines.filter((l) => l.queued).length} running`),
+      siteInd(c.industry)
+        ? k("Sites", `${(f.sites || []).length} / ${Sites.MAX_SITES}`, `${(f.sites || []).filter((x) => x.builtAt && !x.paused).length} working`)
+        : k("Production lines", `${f.lines.length} / ${MAX_LINES}`, `${f.lines.filter((l) => l.queued).length} running`),
       k("Sold to everyday buyers", f.carsSold.toLocaleString(), salesBonus(f) ? `at +${Math.round(salesBonus(f) * 100)}% thanks to your salespeople` : "the moment they're made"),
       k("Sales revenue", fmtCash(f.revenue), "all-time, into the treasury")
     );
     const mine = recipesFor(c.industry);
     const ind = mk("p", "co-note", siteInd(c.industry)
-      ? `${c.ticker} is ${aAn(c.industry)} ${c.industry.toLowerCase()} company. ${c.industry === "Mining" ? "It surveys deposits and runs mines that dig around the clock." : "It grows crops in fields, taps rubber on plantations and raises cattle in pens."}`
+      ? `${c.ticker} is ${aAn(c.industry)} ${c.industry.toLowerCase()} company. ${Sites.blurb(c.industry)}`
       : mine.length
       ? `${c.ticker} is ${aAn(c.industry)} ${c.industry.toLowerCase()} company. Its lines can make ${mine.map((k) => ITEMS[k].name.toLowerCase()).join(", ")}.`
       : c.industry === "Security" ? `${c.ticker} is a security company: it sells protection to players and companies against robberies and heists (set a daily price on the Stocks tab). It needs no factory.`
@@ -924,7 +970,7 @@ const Factory = (() => {
     const allowed = c ? recipesFor(c.industry) : [];
     // Mining and Farming: sites instead of lines (old lines keep going until their queues are done)
     const sitesMode = !!c && siteInd(c.industry);
-    g("fLinesTitle").textContent = !sitesMode ? "Production lines" : c.industry === "Mining" ? "Mines" : "Fields, plantations and pens";
+    g("fLinesTitle").textContent = !sitesMode ? "Production lines" : Sites.title(c.industry);
     g("fSites").classList.toggle("hidden", !sitesMode);
     if (sitesMode) Sites.render(g("fSites"), f, can, c, run);
     g("fBuild").classList.toggle("hidden", !can || sitesMode || f.lines.length >= MAX_LINES);
