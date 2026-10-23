@@ -454,7 +454,8 @@ const Factory = (() => {
   // Count every unit finished by `now`. Things everyday buyers want are sold the moment each one is
   // made, at the price recent sales across the game allow; `dem` holds that shared demand and is
   // updated in place. Also notes how long each line ran, for upkeep. Returns the Cash the sales brought in.
-  function settle(f, now, dem = {}, made = {}) {
+  // grid.kwh: electricity this company has already sold to miners and still has to deliver (Energy, rig.js)
+  function settle(f, now, dem = {}, made = {}, grid = { kwh: 0 }) {
     let income = 0;
     if (f.project && now >= f.project.endsAt) {          // finished research
       f.research[f.project.key] = true;
@@ -483,6 +484,13 @@ const Factory = (() => {
     // Sell in the order things were made, so recent sales by anyone keep pushing the price down
     sales.sort((x, y) => x.t - y.t);
     for (const e of sales) {
+      // Power goes to miners who've already paid for it before any is sold to everyday buyers
+      if (e.k === "power" && grid.kwh > 0) {
+        const cover = Math.min(e.n, Math.ceil(grid.kwh / 1000));
+        grid.kwh = Math.max(0, grid.kwh - cover * 1000);
+        e.n -= cover;
+        if (!e.n) continue;
+      }
       const d = dem[e.k] || (dem[e.k] = { load: 0, at: 0 });
       d.load = loadAt(d, e.t);
       d.at = Math.max(d.at || 0, e.t);
@@ -618,7 +626,8 @@ const Factory = (() => {
       // Paid actions cost a Pi fee from the player's wallet
       const meSnap = opts.fee ? await tx.get(db.collection("users").doc(uid)) : null;
       const now = Date.now(), made = {};
-      let treasury = c.treasury + settle(f, now, dem, made);
+      const grid = { kwh: c.powerOwed || 0 };
+      let treasury = c.treasury + settle(f, now, dem, made, grid);
       if (typeof Sites !== "undefined") treasury = Sites.settle(f, now, made, treasury, { research: f.research, crew: (x) => crewMult(x, f), out: (x) => outMult(x, f) });
       treasury = settleContracts(f, t, treasury, contracts, made);
       treasury = lineUpkeep(f, now, treasury);
@@ -633,11 +642,12 @@ const Factory = (() => {
       treasury = settleContracts(f, t, treasury, contracts, made);   // collect anything the change freed up (a refund, a delivery)
       settleJobs(f, now, jobs);                 // someone the change let go
       resume(f, now, treasury);
-      if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury && !contracts.some((k) => k.dirty) && !jobs.some((k) => k.dirty)) return "";   // nothing to save
+      if (!change && sig(f) === sig(JSON.parse(before)) && treasury === c.treasury && grid.kwh === (c.powerOwed || 0) && !contracts.some((k) => k.dirty) && !jobs.some((k) => k.dirty)) return "";   // nothing to save
       if (treasury < 0) throw new Error(`The treasury only has ${fmtCash(c.treasury)}.`);
       if (meSnap) tx.update(meSnap.ref, { coins: Economy.payFee(tx, meSnap.data() || {}, opts.fee === true ? "That" : opts.fee) });
       tx.set(factoryRef(t), { ...f, updatedAt: fb.firestore.FieldValue.serverTimestamp() });
-      if (treasury !== c.treasury) tx.update(companyRef(t), { treasury });
+      if (grid.kwh !== (c.powerOwed || 0)) tx.update(companyRef(t), { treasury, powerOwed: grid.kwh });
+      else if (treasury !== c.treasury) tx.update(companyRef(t), { treasury });
       for (const [k, d] of Object.entries(dem)) if (d.touched) tx.set(demandRef(k), { load: d.load, at: Math.round(d.at) });
       for (const k of contracts) if (k.dirty) tx.set(k.ref, { ...k.data, updatedAt: now });
       for (const d of ctx.created) tx.set(contractsCol().doc(), { ...d, createdAt: fb.firestore.FieldValue.serverTimestamp(), updatedAt: now });

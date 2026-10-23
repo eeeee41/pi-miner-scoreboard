@@ -281,6 +281,7 @@
   .f-table-wrap { overflow-x: auto; }
   .f-others { margin-top: 10px; }
   .s-build { margin-top: 12px; flex-wrap: wrap; }
+  #rigUpgrade { margin-top: 12px; width: 100%; }
   .f-line .check-row { margin: 0; align-items: center; }
   .check-row { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; margin: 10px 0; cursor: pointer; }
   .check-row input { margin-top: 3px; width: 18px; height: 18px; flex: none; accent-color: var(--accent, #f5b84b); }
@@ -455,6 +456,12 @@
       <div class="mine-target" id="mineTarget"></div>
       <div class="mine-meta" id="mineMeta">Press Start to mine. You'll race everyone else for each block.</div>
       <div class="status" id="status"></div>
+    </div>
+
+    <div class="card" style="margin-top: 16px" id="rigCard">
+      <h2>Your rig and electricity</h2>
+      <div class="status" id="rigMsg" role="status" aria-live="polite"></div>
+      <div id="rigInfo"></div>
     </div>
 
     <div class="lower">
@@ -797,19 +804,20 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <!-- Game scripts. Bump ?v= on every release so browsers never mix old and new files. -->
 <!-- Phase 1: wallets and the Pi coin exchange -->
-<script src="economy.js?v=20261022-2000"></script>
+<script src="economy.js?v=20261022-2100"></script>
 <!-- Phase 2: companies, shares and dividends -->
-<script src="companies.js?v=20261022-2000"></script>
+<script src="companies.js?v=20261022-2100"></script>
 <!-- Phase 3: production -->
-<script src="sites.js?v=20261022-2000"></script>
-<script src="factory.js?v=20261022-2000"></script>
+<script src="sites.js?v=20261022-2100"></script>
+<script src="factory.js?v=20261022-2100"></script>
 <!-- Phase 4: marketplace for goods -->
-<script src="contracts.js?v=20261022-2000"></script>
-<script src="work.js?v=20261022-2000"></script>
-<script src="bank.js?v=20261022-2000"></script>
-<script src="market.js?v=20261022-2000"></script>
+<script src="contracts.js?v=20261022-2100"></script>
+<script src="work.js?v=20261022-2100"></script>
+<script src="bank.js?v=20261022-2100"></script>
+<script src="rig.js?v=20261022-2100"></script>
+<script src="market.js?v=20261022-2100"></script>
 
 <!-- Mining on the shared Pi blockchain + sign-in (loads last) -->
-<script src="miner.js?v=20261022-2000"></script>
+<script src="miner.js?v=20261022-2100"></script>
 </body>
 </html>

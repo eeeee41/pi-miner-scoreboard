@@ -115,8 +115,8 @@ const Companies = (() => {
     });
   }
 
-  async function saveSettings(ticker, { dividendPerHour, offerPrice, offerLeft, industry, tradingClosed }) {
-    await companyRef(ticker).update({ dividendPerHour, offerPrice, offerLeft, industry, tradingClosed });
+  async function saveSettings(ticker, { dividendPerHour, offerPrice, offerLeft, industry, tradingClosed, tariff }) {
+    await companyRef(ticker).update({ dividendPerHour, offerPrice, offerLeft, industry, tradingClosed, ...(tariff != null ? { tariff } : {}) });
   }
 
   // The controller hands the company to another shareholder (a player, not the market or a bot)
@@ -318,6 +318,12 @@ const Companies = (() => {
       indSel.value = c.industry;
       indL.append(mk("span", null, "Industry (what its factory makes)"), indSel);
       r1.append(field("sDiv", "Dividend per hour, total ($)", { type: "number", min: 0, step: 0.01, value: (c.dividendPerHour / 100).toFixed(2) }), indL);
+      // Energy companies can sell electricity to miners
+      const tariffRow = mk("div", "co-form");
+      if (c.industry === "Energy") {
+        tariffRow.append(field("sTariff", "Electricity for miners ($ per MWh, 0 = not selling)", { type: "number", min: 0, step: 0.01, value: ((c.tariff || 0) / 100).toFixed(2) }));
+        tariffRow.append(mk("p", "co-note", `The grid charges $8.00/MWh. Miners who pick you pay into the treasury as they mine, and your power lines deliver what they bought before selling to everyday buyers.${c.powerOwed ? ` Still to deliver: ${(c.powerOwed / 1000).toFixed(1)} MWh${c.powerOwed >= 100000 ? " (over 100 MWh: no new customers until your plants catch up)" : ""}.` : ""}`));
+      }
       const closeL = mk("label", "check-row"); closeL.htmlFor = "sClosed";
       const closeBox = mk("input"); closeBox.type = "checkbox"; closeBox.id = "sClosed"; closeBox.checked = !!c.tradingClosed;
       closeL.append(closeBox, mk("span", null, "Close trading in our shares: no buying or selling between players on the Exchange. New shares only come from our own offerings."));
@@ -333,11 +339,13 @@ const Companies = (() => {
         if (!(dividendPerHour >= 0) || !(offerPrice >= 0) || !(offerLeft >= 0)) throw new Error("Use zero or more for every box.");
         if (offerLeft > 0 && !offerPrice) throw new Error("Set a price for the new shares.");
         if (offerLeft > 10000000) throw new Error("Offer at most 10,000,000 new shares at a time.");
-        await saveSettings(c.ticker, { dividendPerHour, offerPrice, offerLeft, industry: g("sSetIndustry").value, tradingClosed: g("sClosed").checked });
+        const tariff = g("sTariff") ? toCents(g("sTariff").value) : null;
+        if (tariff != null && !(tariff >= 0 && tariff <= 100000)) throw new Error("Set a tariff between $0 and $1,000 per MWh.");
+        await saveSettings(c.ticker, { dividendPerHour, offerPrice, offerLeft, industry: g("sSetIndustry").value, tradingClosed: g("sClosed").checked, tariff });
         return "✓ Saved.";
       }, "sCtlMsg");
       const cmsg = mk("div", "status"); cmsg.id = "sCtlMsg";
-      sec.append(r1, r2, closeL, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes."), save, cmsg);
+      sec.append(r1, r2, tariffRow, closeL, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes."), save, cmsg);
       // Hand control to another shareholder (two clicks, so it can't happen by accident)
       const heirs = st.top.filter((h) => h.shares > 0 && h.uid !== c.controller && h.uid !== "market" && !String(h.uid).startsWith("bot-"));
       const ho = mk("div", "co-sec");

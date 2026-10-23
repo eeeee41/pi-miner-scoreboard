@@ -355,7 +355,7 @@ async function prepareJob() {
   const height = tip.height + 1;
   const b = {
     height, prevHash: tip.hash, prevTimestamp: tip.timestamp || 0, timestamp: Date.now(),
-    miner: state.user.uid, reward: rewardAt(height), work: clampWork(tip.nextWork || START_WORK),
+    miner: state.user.uid, reward: typeof Rig !== "undefined" ? Rig.reward(rewardAt(height)) : rewardAt(height), work: clampWork(tip.nextWork || START_WORK),
     txIds: trades.map((t) => `${t.asset}/${t.id}`), txRoot: await sha256Hex(trades.map(tradeLine).join("\n"))
   };
   return { ...b, prefix: blockHeader(b), target: targetFor(b.work) };
@@ -421,12 +421,18 @@ function onToggleClick() {
   if (state.running) {
     state.running = false;
     abortMining();
+    if (typeof Rig !== "undefined") Rig.stop();     // pay for the power used
     $("mineMeta").textContent = "Press Start to mine. You'll race everyone else for each block.";
     if (!state.submitting) setStatus("Miner stopped.", "");
     render();
     return;
   }
+  if (typeof Rig !== "undefined" && !Rig.licensed()) {
+    setStatus("You need a mining licence to mine. Buy one below (it comes with a basic rig).", "err");
+    return;
+  }
   state.running = true;
+  if (typeof Rig !== "undefined") Rig.start();     // the electricity meter starts
   setStatus("", "");
   render();
   if (!state.loopActive) runMiner();
@@ -523,7 +529,7 @@ function render() {
   const work = clampWork(state.tip.nextWork || START_WORK);
   $("nextHeight").textContent = state.tipLoaded ? `#${h.toLocaleString()}` : "…";
   $("nextSub").textContent = state.tipLoaded
-    ? `Reward ${rewardAt(h)} Pi${state.feePool ? ` + ${state.feePool.toLocaleString()} Pi in fees` : ""} · ${state.pending}${state.pending >= MAX_BLOCK_TRADES ? "+" : ""} trade${state.pending === 1 ? "" : "s"} waiting to be confirmed`
+    ? `Reward ${typeof Rig !== "undefined" && Rig.licensed() && Rig.reward(rewardAt(h)) < rewardAt(h) ? `${Rig.reward(rewardAt(h))} of ${rewardAt(h)} Pi (your rig's share)` : `${rewardAt(h)} Pi`}${state.feePool ? ` + ${state.feePool.toLocaleString()} Pi in fees` : ""} · ${state.pending}${state.pending >= MAX_BLOCK_TRADES ? "+" : ""} trade${state.pending === 1 ? "" : "s"} waiting to be confirmed`
     : "Loading the chain…";
   $("workSub").textContent = `Difficulty: about ${fmtBig(work)} hashes per block, aiming for one block a minute`;
   if (!state.mining) $("blockBar").style.width = "0%";
@@ -542,6 +548,7 @@ function render() {
   $("mineSub").textContent =
     state.running ? (state.submitting ? "saving block…" : "mining…")
     : state.loopActive || state.submitting ? "stopping…"
+    : typeof Rig !== "undefined" && state.user && !Rig.licensed() ? "needs a mining licence"
     : "mining is off";
   showTarget();
   renderChain();
@@ -670,6 +677,7 @@ function handleAuth(user) {
     Market.signOut();
     Work.signOut();
     Bank.signOut();
+    Rig.signOut();
     resetSession();
     $("dashboard").classList.add("hidden");
     $("userChip").classList.add("hidden");
@@ -694,6 +702,7 @@ function handleAuth(user) {
   Market.signIn(user);                         // goods marketplace
   Work.signIn(user);                           // day jobs and jobs at companies
   Bank.signIn(user);                           // deposits and loans
+  Rig.signIn(user);                            // mining licence, rig and electricity
   const session = state.session;
   const live = (fn) => (...args) => { if (session === state.session) fn(...args); };
   const fail = (what) => live((err) => setStatus(`${what}: ${dbErrorMessage(err)}`, "err"));
@@ -770,6 +779,7 @@ if (typeof firebase === "undefined") {
   Market.init(firebase, db);
   Work.init(firebase, db);
   Bank.init(firebase, db);
+  Rig.init(firebase, db, { stop: () => { if (state.running) onToggleClick(); }, changed: () => render() });
   auth.getRedirectResult().catch(showAuthError);
   auth.onAuthStateChanged(handleAuth);
 }

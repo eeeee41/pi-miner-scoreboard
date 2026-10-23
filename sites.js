@@ -339,6 +339,8 @@ const Sites = (() => {
   // The sites list and the build buttons (Factory tab, in place of production lines)
   function render(box, f, can, c, run) {
     runFn = run;
+    // Keep what the player has picked or typed: this redraws every time the factory updates
+    const kept = new Map([...box.querySelectorAll("select[id], input[id]")].map((e) => [e.id, e.type === "checkbox" ? e.checked : e.value]));
     const sites = f.sites || [];
     const cards = sites.map((s) => s.kind === "mine" ? mineCard(s, f, can) : s.kind === "field" ? fieldCard(s, f, can)
       : s.kind === "plantation" ? plantationCard(s, f, can) : penCard(s, f, can));
@@ -359,6 +361,12 @@ const Sites = (() => {
       cards.push(row);
     }
     box.replaceChildren(...cards);
+    for (const [id, v] of kept) {
+      const e = document.getElementById(id);
+      if (!e) continue;
+      if (e.type === "checkbox") e.checked = v;
+      else if (e.tagName !== "SELECT" || [...e.options].some((o) => o.value === v)) e.value = v;
+    }
   }
 
   // What the company can do, for the "What this company can make" card

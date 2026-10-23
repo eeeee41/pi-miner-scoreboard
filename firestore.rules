@@ -65,6 +65,8 @@ service cloud.firestore {
         || (entry == 'starting-cash' && d.kind == 'grant' && d.amount == 1000000)
         || (entry == 'starting-pi' && d.kind == 'piGrant' && d.amount == 10)
         || (d.kind == 'job' && d.keys().hasOnly(['kind', 'job', 'amount', 'hours', 'at']) && d.amount is int && d.at == request.time)
+        || (d.kind == 'power' && d.keys().hasOnly(['kind', 'asset', 'kwh', 'amount', 'at']) && d.amount is int && d.at == request.time)
+        || (d.kind == 'rig' && d.keys().hasOnly(['kind', 'rig', 'amount', 'at']) && d.amount is int && d.at == request.time)
         || (d.kind == 'bank' && d.keys().hasOnly(['kind', 'action', 'amount', 'at']) && d.amount is int && d.at == request.time)
         || (d.kind in ['founded', 'offering', 'deposit']
           && d.keys().hasOnly(['kind', 'asset', 'amount', 'qty', 'price', 'at'])
@@ -110,7 +112,9 @@ service cloud.firestore {
     // The owner trading, cancelling or collecting a block reward: balances stay whole and never go negative
     function walletChange() {
       let w = request.resource.data;
-      return changed().hasOnly(['cash', 'coins', 'blocksMined', 'shift', 'workXp', 'bank', 'bankAt', 'loan', 'loanAt', 'collateral'])
+      return changed().hasOnly(['cash', 'coins', 'blocksMined', 'shift', 'workXp', 'bank', 'bankAt', 'loan', 'loanAt', 'collateral', 'rig', 'powerFrom'])
+        && w.get('rig', 0) is int && w.get('rig', 0) >= 0 && w.get('rig', 0) <= 4
+        && (w.get('powerFrom', null) == null || w.powerFrom is string)
         && isCount(w.get('cash', 0))
         && isCount(w.get('coins', 0))
         && isCount(w.get('blocksMined', 0))
@@ -236,7 +240,7 @@ service cloud.firestore {
       allow create: if signedIn() && newCompany(ticker);
       allow update: if signedIn()
         && (companySettings() || buyOffering() || addToTreasury() || payout() || takeControl(ticker)
-            || newLastPrice() || controllerSpends());
+            || newLastPrice() || controllerSpends() || buyPower());
       allow delete: if false;
 
       // The factory: only the controller sees or runs it (warehouse, lines, research, staff, sales)
@@ -295,7 +299,8 @@ service cloud.firestore {
     function companySettings() {
       let c = request.resource.data;
       return resource.data.controller == request.auth.uid
-        && changed().hasOnly(['dividendPerHour', 'offerPrice', 'offerLeft', 'industry', 'tradingClosed'])
+        && changed().hasOnly(['dividendPerHour', 'offerPrice', 'offerLeft', 'industry', 'tradingClosed', 'tariff'])
+        && (!('tariff' in c) || (c.tariff is int && c.tariff >= 0 && c.tariff <= 100000))
         && (!('tradingClosed' in c) || c.tradingClosed is bool)
         && c.industry is string && c.industry.size() > 0 && c.industry.size() <= 40
         && isCount(c.dividendPerHour) && isCount(c.offerPrice)
@@ -346,8 +351,21 @@ service cloud.firestore {
     // The controller spends the treasury on the factory (materials, lines) and banks car sales
     function controllerSpends() {
       return resource.data.controller == request.auth.uid
-        && changed().hasOnly(['treasury'])
-        && isCount(request.resource.data.treasury);
+        && changed().hasOnly(['treasury', 'powerOwed'])
+        && isCount(request.resource.data.treasury)
+        && request.resource.data.get('powerOwed', 0) is int && request.resource.data.get('powerOwed', 0) >= 0
+        && request.resource.data.get('powerOwed', 0) <= resource.data.get('powerOwed', 0);
+    }
+
+    // A miner buying electricity from an Energy company: pays at least its tariff for every kWh it's owed
+    function buyPower() {
+      let c = request.resource.data;
+      let was = resource.data;
+      return changed().hasOnly(['treasury', 'powerOwed'])
+        && was.industry == 'Energy' && was.get('tariff', 0) > 0
+        && c.treasury is int && c.treasury > was.treasury
+        && c.powerOwed is int && c.powerOwed > was.get('powerOwed', 0)
+        && (c.treasury - was.treasury) * 1000 >= (c.powerOwed - was.get('powerOwed', 0)) * was.tariff;
     }
 
     // The last trade price shown on the Stocks tab

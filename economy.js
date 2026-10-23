@@ -599,6 +599,8 @@ const Economy = (() => {
         case "grant": text = "Starting Cash"; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
         case "piGrant": text = "Starter Pi, for transaction fees"; amt = ["pos", `+${fmtPi(h.amount)}`]; break;
         case "job": text = `Shift as a ${String(h.job).toLowerCase()} (${h.hours} hour${h.hours === 1 ? "" : "s"})`; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
+        case "power": text = `Electricity for mining from ${h.asset === "GRID" ? "the grid" : h.asset} (${(h.kwh / 1000).toFixed(2)} MWh)`; amt = ["", `−${fmtCash(h.amount)}`]; break;
+        case "rig": text = `Bought: ${h.rig}`; amt = ["", `−${fmtCash(h.amount)}`]; break;
         case "wage": text = `Wages from ${a} (${h.hours} hour${h.hours === 1 ? "" : "s"})`; amt = ["pos", `+${fmtCash(h.amount)}`]; break;
         case "bank": {
           const B = { deposit: ["Deposited in the bank", "", "−"], withdraw: ["Withdrew from the bank", "pos", "+"], borrow: ["Borrowed from the bank", "pos", "+"],
