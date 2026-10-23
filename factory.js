@@ -77,7 +77,8 @@ const Factory = (() => {
   // What each industry can make. A company's lines only run its own industry's recipes; everything
   // else it needs comes from other companies on the Market, or from suppliers at their prices.
   const INDUSTRIES = ["Cars", "Electronics", "Steel and metals", "Mining", "Energy", "Farming", "Food", "Retail", "Software", "Finance", "Security"];
-  // Mining, Farming, Energy, and Steel and metals run sites instead of lines (sites.js); these recipes are for the others
+  // Mining, Farming, Energy, Steel and metals, Software, Retail and Finance run sites instead of lines
+  // (sites.js, services.js); these recipes are for the others
   const MINES = [], FARMS = ["Food"];
   // inputs → `yields` units (default 1) every `secs`; `how` = where it comes from when it needs no inputs;
   // `sellsFor` = everyday buyers take it the moment it's made, for this many cents
@@ -109,13 +110,13 @@ const Factory = (() => {
     tire:        { inputs: { rubber: 2, steel: 1 },    secs: 90,  ind: ["Cars"] },
     engine:      { inputs: { steel: 4, electronics: 2 }, secs: 300, ind: ["Cars"] },
     car:         { inputs: { engine: 1, tire: 4, steel: 6, glass: 2, electronics: 2 }, secs: 600, ind: ["Cars"], sellsFor: CAR_PRICE },
-    clothing:    { inputs: { cotton: 3 }, secs: 90, ind: ["Retail"], sellsFor: 1000 },
-    shoes:       { inputs: { rubber: 1, cotton: 1, plastic: 1 }, secs: 60, ind: ["Retail"], sellsFor: 1000 },
-    toys:        { inputs: { plastic: 3 }, secs: 45, ind: ["Retail"], sellsFor: 700 },
-    app:         { inputs: {}, secs: 300, ind: ["Software"], how: "written by your team", sellsFor: 1500 },
-    cloud:       { inputs: { electronics: 2 }, secs: 600, ind: ["Software"], sellsFor: 5000 },
-    account:     { inputs: {}, secs: 300, ind: ["Finance"], how: "opened for customers", sellsFor: 1200 },
-    insurance:   { inputs: {}, secs: 600, ind: ["Finance"], how: "written for customers", sellsFor: 2500 }
+    clothing:    { inputs: { cotton: 3 }, secs: 90, ind: [], sellsFor: 1000 },
+    shoes:       { inputs: { rubber: 1, cotton: 1, plastic: 1 }, secs: 60, ind: [], sellsFor: 1000 },
+    toys:        { inputs: { plastic: 3 }, secs: 45, ind: [], sellsFor: 700 },
+    app:         { inputs: {}, secs: 300, ind: [], how: "written by your team", sellsFor: 1500 },
+    cloud:       { inputs: { electronics: 2 }, secs: 600, ind: [], sellsFor: 5000 },
+    account:     { inputs: {}, secs: 300, ind: [], how: "opened for customers", sellsFor: 1200 },
+    insurance:   { inputs: {}, secs: 600, ind: [], how: "written for customers", sellsFor: 2500 }
   };
   const recipesFor = (industry) => Object.keys(RECIPES).filter((k) => RECIPES[k].ind.includes(industry));
   const canMake = (industry, k) => RECIPES[k].ind.includes(industry);

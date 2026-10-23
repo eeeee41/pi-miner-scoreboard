@@ -60,7 +60,8 @@
    ===================================================================== */
 const Sites = (() => {
   const HOUR = 3600000;
-  const INDUSTRIES = ["Mining", "Farming", "Energy", "Steel and metals"];
+  const SV = () => typeof Services !== "undefined";       // Software, Retail and Finance sites (services.js)
+  const INDUSTRIES = ["Mining", "Farming", "Energy", "Steel and metals", ...(SV() ? Services.INDUSTRIES : [])];
   const MAX_SITES = 10;
   const ORES = {
     iron:   { rich: [120, 300], size: [8000, 30000] },
@@ -118,11 +119,13 @@ const Sites = (() => {
     oxygen:     { name: "Basic oxygen steelmaking", cost: 600000, hours: 2, needs: "hotblast", ind: ["Steel and metals"], does: "Blast-furnace steel needs 1 iron ore instead of 2" },
     bigfurnace: { name: "Bigger furnaces",     cost: 500000, hours: 2,   needs: null,      ind: ["Steel and metals"], does: "Every furnace and kiln takes batches twice as big" },
     floatglass: { name: "Float glass",         cost: 400000, hours: 1,   needs: null,      ind: ["Steel and metals"], does: "Glass needs 1 sand instead of 2" },
-    uhp:        { name: "Ultra-high-power arcs", cost: 700000, hours: 2.5, needs: null,    ind: ["Steel and metals"], does: "Arc furnaces use 0.3 MWh per steel instead of 0.5" }
+    uhp:        { name: "Ultra-high-power arcs", cost: 700000, hours: 2.5, needs: null,    ind: ["Steel and metals"], does: "Arc furnaces use 0.3 MWh per steel instead of 0.5" },
+    ...(SV() ? Services.RESEARCH : {})
   };
   const isSiteIndustry = (ind) => INDUSTRIES.includes(ind);
   const builds = (ind) => (ind === "Mining" ? ["survey"] : ind === "Farming" ? ["field", "plantation", "pen"]
-    : ind === "Energy" ? ["survey", "well", "refinery", "coal", "gas", "solar"] : ind === "Steel and metals" ? ["survey", "blast", "kiln", "arc"] : []);
+    : ind === "Energy" ? ["survey", "well", "refinery", "coal", "gas", "solar"] : ind === "Steel and metals" ? ["survey", "blast", "kiln", "arc"]
+    : SV() ? Services.builds(ind) : []);
 
   // Same random numbers every time for the same site and moment, so the page's preview matches what's saved
   function roll(key) {
@@ -143,6 +146,7 @@ const Sites = (() => {
   const depleted = (s) => s.kind === "mine" && s.method && s.mined >= reach(s);
   function upkeepOf(s) {
     if (!s.builtAt) return 0;                              // a surveyed deposit nobody has opened costs nothing
+    if (SV() && Services.handles(s.kind)) return Services.upkeepOf(s);
     if (s.kind === "mine") return depleted(s) ? UPKEEP.depleted : UPKEEP[s.method];
     if (s.kind === "plant" || s.kind === "furnace") return UPKEEP[s.type] || 0;
     return UPKEEP[s.kind] || 0;
@@ -336,6 +340,8 @@ const Sites = (() => {
           }
         }
         s.lastAt = now;
+      } else if (SV() && Services.handles(s.kind)) {
+        treasury = Services.settle(s, f, now, treasury, { ...H, research });
       }
     }
     return treasury;
@@ -345,7 +351,7 @@ const Sites = (() => {
     .map((s) => (s.kind === "plant" ? "power" : "gasoline")))];
   const sellsFor = (ind) => (ind === "Energy" ? ["power", "gasoline"] : []);
   // Energy companies this company's arc furnaces buy from (read in its saves)
-  const powerSuppliers = (f) => [...new Set((f.sites || []).filter((s) => s.kind === "furnace" && s.type === "arc" && s.powerFrom).map((s) => s.powerFrom))].slice(0, 3);
+  const powerSuppliers = (f) => [...new Set((f.sites || []).filter((s) => ((s.kind === "furnace" && s.type === "arc") || s.kind === "dc") && s.powerFrom).map((s) => s.powerFrom))].slice(0, 3);
   // Sites stop where they are when upkeep can't be paid, and start again once there's money
   const pauseAll = (f) => { let n = 0; for (const s of f.sites || []) if (s.builtAt && !s.paused) { s.paused = true; n++; } return n; };
   const resumeAll = (f) => { for (const s of f.sites || []) delete s.paused; };
@@ -692,14 +698,20 @@ const Sites = (() => {
     const kept = new Map([...box.querySelectorAll("select[id], input[id]")].map((e) => [e.id, e.type === "checkbox" ? e.checked : e.value]));
     const sites = f.sites || [];
     const CARDS = { mine: mineCard, field: fieldCard, plantation: plantationCard, pen: penCard, plant: plantCard, well: wellCard, refinery: refineryCard, furnace: furnaceCard };
-    const cards = sites.map((s) => (CARDS[s.kind] || penCard)(s, f, can));
+    const cards = sites.map((s) => (SV() && Services.handles(s.kind) ? Services.card(s, f, can, c, run, crewChip) : (CARDS[s.kind] || penCard)(s, f, can)));
     if (!cards.length) cards.push(mk("div", "empty", !can ? "This company hasn't built anything yet."
       : c.industry === "Mining" ? "No mines yet. Survey for a deposit to start."
       : c.industry === "Farming" ? "No fields yet. Build a field, a rubber plantation or a cattle pen."
       : c.industry === "Energy" ? "Nothing built yet. Drill an oil well, build a refinery, or build a power plant."
+      : SV() && Services.INDUSTRIES.includes(c.industry) ? Services.empty(c.industry)
       : "Nothing built yet. Build a blast furnace, a glass kiln or an arc furnace, or survey for ore."));
     if (can && sites.length < MAX_SITES) {
       const row = mk("div", "co-form s-build");
+      if (SV() && Services.INDUSTRIES.includes(c.industry)) {
+        box.replaceChildren(...cards, Services.buildRow(c, run));
+        restore(box, kept);
+        return;
+      }
       if (c.industry === "Mining") {
         const sel = mk("select", "f-recipe"); sel.id = "sOre"; sel.setAttribute("aria-label", "Ore to survey for");
         sel.replaceChildren(...Object.keys(ORES).map((k) => { const o = mk("option", null, name(k)); o.value = k; return o; }));
@@ -721,6 +733,10 @@ const Sites = (() => {
       cards.push(row);
     }
     box.replaceChildren(...cards);
+    restore(box, kept);
+  }
+  // Put back what the player had picked or typed before the redraw
+  function restore(box, kept) {
     for (const [id, v] of kept) {
       const e = document.getElementById(id);
       if (!e) continue;
@@ -732,6 +748,7 @@ const Sites = (() => {
   // What the company can do, for the "What this company can make" card
   function guide(industry) {
     const p = (t) => mk("p", "co-note", t);
+    if (SV() && Services.INDUSTRIES.includes(industry)) return Services.guide(industry);
     if (industry === "Energy") return [
       p(`Oil well (${fmtCash(COST.well)}, ${fmtCash(UPKEEP.well)}/hour): pumps ${WELL.r0[0]}–${WELL.r0[1]} barrels of crude an hour to start, declining ${WELL.decline * 100}% an hour until it levels off at ${WELL.floor * 100}% of that.`),
       p(`Refinery (${fmtCash(COST.refinery)}, ${fmtCash(UPKEEP.refinery)}/hour): takes ${REFINERY.rate} barrels an hour. Fuel mode: every 4 barrels make 2 gasoline and 1 plastic. Chemicals mode: 1 gasoline and 4 plastic. Gasoline sells to everyday buyers as it's made; plastic goes to the warehouse.`),
@@ -751,14 +768,14 @@ const Sites = (() => {
       p(`Cattle pen (${fmtCash(COST.pen)}, ${fmtCash(UPKEEP.pen)}/hour): up to ${PEN_CAP} head. They eat 1 wheat each per hour and the herd grows by a quarter every ${BREED_EVERY} fed hours.`)];
   }
 
-  const title = (ind) => ({ Mining: "Mines", Farming: "Fields, plantations and pens", Energy: "Power plants, wells and refineries", "Steel and metals": "Furnaces and mines" })[ind] || "Sites";
-  const blurb = (ind) => ({
+  const title = (ind) => (SV() && Services.INDUSTRIES.includes(ind) ? Services.title(ind) : null) || ({ Mining: "Mines", Farming: "Fields, plantations and pens", Energy: "Power plants, wells and refineries", "Steel and metals": "Furnaces and mines" })[ind] || "Sites";
+  const blurb = (ind) => (SV() && Services.INDUSTRIES.includes(ind) ? Services.blurb(ind) : null) || ({
     Mining: "It surveys deposits and runs mines that dig around the clock.",
     Farming: "It grows crops in fields, taps rubber on plantations and raises cattle in pens.",
     Energy: "It drills oil wells, refines crude into gasoline and plastic, and runs power plants that sell electricity around the clock.",
     "Steel and metals": "It smelts steel and glass in batch furnaces, and can mine its own iron ore, coal and sand."
   })[ind] || "";
 
-  return { INDUSTRIES, RESEARCH, isSiteIndustry, settle, upkeepOf, pauseAll, resumeAll, render, guide, builds, sells, sellsFor, powerSuppliers, title, blurb,
+  return { INDUSTRIES, RESEARCH, isSiteIndustry, settle, upkeepOf, pauseAll, resumeAll, render, guide, builds, close, sells, sellsFor, powerSuppliers, title, blurb,
     CROPS, ORES, COST, UPKEEP, PLANTS, WELL, REFINERY, FURNACES, SURVEYS, MAX_SITES, sunAt };
 })();
