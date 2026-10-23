@@ -38,7 +38,14 @@ const START_WORK = 2 ** 26;        // average hashes for block #1 (~67 million)
 const MIN_WORK = 2 ** 16;          // easiest allowed (~65 thousand hashes)
 const MAX_WORK = 2 ** 32;          // hardest allowed (~4.3 billion hashes)
 const MAX_BLOCK_TRADES = 100;      // trades confirmed per block
-const THREADS = Math.max(1, Math.min(16, navigator.hardwareConcurrency || 4));
+// Mining threads: one Web Worker each. Defaults to every thread the browser reports; the player can pick
+// more (some browsers report fewer than the computer has) or fewer (to keep the computer responsive).
+const HW_THREADS = Math.max(1, navigator.hardwareConcurrency || 4);
+const MAX_THREADS = 64;
+let threads = (() => {
+  try { const n = parseInt(localStorage.getItem("minerThreads"), 10); if (n >= 1 && n <= MAX_THREADS) return n; } catch (e) { /* storage blocked */ }
+  return Math.min(HW_THREADS, MAX_THREADS);
+})();
 const CHAIN_SHOWN = 12;            // blocks listed on the Mine tab
 const GENESIS_HASH = "0".repeat(64);
 
@@ -236,7 +243,7 @@ function startPool() {
   if (pool.failed) return false;
   try {
     const url = URL.createObjectURL(new Blob([`(${minerWorkerMain.toString()})();`], { type: "text/javascript" }));
-    pool.workers = Array.from({ length: THREADS }, () => {
+    pool.workers = Array.from({ length: threads }, () => {
       const w = new Worker(url);
       w.onmessage = onWorkerMessage;
       w.onerror = onWorkerError;
@@ -281,7 +288,7 @@ function paintProgress(job, hashes, t0) {
   state.progress = hashes / job.work;
   $("mineMeta").textContent =
     `Mining block #${job.height}… ${fmtBig(hashes)} hashes tried (${Math.round(state.progress * 100)}% of the average) · ` +
-    `${fmtRate(hashes / Math.max(secs, 0.001))}${pool.failed ? " on 1 thread" : ` on ${THREADS} threads`}`;
+    `${fmtRate(hashes / Math.max(secs, 0.001))}${pool.failed ? " on 1 thread" : ` on ${threads} thread${threads === 1 ? "" : "s"}`}`;
   $("blockBar").style.width = Math.min(100, state.progress * 100) + "%";
 }
 
@@ -309,6 +316,33 @@ async function onWorkerMessage(e) {
     return;
   }
   job.resolve({ ...job.block, nonce: m.nonce, hash, attempts: Math.max(job.hashes, m.nonce + 1), ms });
+}
+
+// Change the number of mining threads. While a block is being mined, the new set of workers picks up
+// the same block straight away (a few nonces get tried twice; nothing is lost).
+function setThreads(n) {
+  threads = Math.max(1, Math.min(MAX_THREADS, Math.floor(n) || 1));
+  try { localStorage.setItem("minerThreads", String(threads)); } catch (e) { /* storage blocked */ }
+  if (!pool.workers) return;
+  const job = pool.job;
+  stopPool();
+  if (!startPool() || !job) return;
+  pool.job = job;
+  pool.workers.forEach((w, i) =>
+    w.postMessage({ type: "mine", jobId: job.jobId, prefix: job.prefix, target: job.target, start: i, stride: pool.workers.length }));
+}
+function renderThreads() {
+  const sel = $("mineThreads");
+  if (!sel) return;
+  const counts = [...new Set([...Array.from({ length: Math.min(HW_THREADS, MAX_THREADS) }, (_, i) => i + 1), threads,
+    ...[2, 4, 8].map((k) => HW_THREADS * k).filter((n) => n <= MAX_THREADS)])].sort((a, b) => a - b);
+  sel.replaceChildren(...counts.map((n) => {
+    const o = el("option", null, n === HW_THREADS ? `${n} (all your browser reports)` : n > HW_THREADS ? `${n} (more than your browser reports)` : String(n));
+    o.value = String(n);
+    return o;
+  }));
+  sel.value = String(threads);
+  sel.disabled = pool.failed;
 }
 
 // Resolves to the solved block, null if stopped or beaten, or undefined if workers are unavailable.
@@ -516,11 +550,12 @@ function setStatus(text, kind) {
 }
 
 function showTarget() {
+  renderThreads();
   const work = clampWork(state.tip.nextWork || START_WORK);
   $("mineTarget").replaceChildren(
     document.createTextNode("Target: a SHA-256 hash below "),
     el("code", null, targetFor(work).toString(16).padStart(8, "0") + "…"),
-    document.createTextNode(pool.failed ? " · 1 CPU thread" : ` · ${THREADS} CPU threads`)
+    document.createTextNode(pool.failed ? " · 1 CPU thread (this browser can't run mining workers)" : "")
   );
 }
 
@@ -763,6 +798,8 @@ function handleAuth(user) {
 /* ---------- 9. Boot ---------- */
 showTarget();
 $("mineBtn").addEventListener("click", onToggleClick);
+renderThreads();
+$("mineThreads").addEventListener("change", (e) => { setThreads(Number(e.target.value)); renderThreads(); });
 $("loginBtn").addEventListener("click", onLoginClick);
 $("signOutBtn").addEventListener("click", () => auth.signOut());
 setInterval(() => { if (state.user) renderChain(); }, 30000);   // keep "x min ago" fresh
