@@ -354,7 +354,7 @@ const Companies = (() => {
         return "✓ Saved.";
       }, "sCtlMsg");
       const cmsg = mk("div", "status"); cmsg.id = "sCtlMsg";
-      sec.append(r1, r2, tariffRow, closeL, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes."), save, cmsg);
+      sec.append(r1, r2, tariffRow, closeL, mk("p", "co-note", "Dividends come out of the treasury every hour and are split by share count. Selling new shares raises Cash for the treasury but gives each share a smaller slice. Changing industry changes what the factory's lines can make; anything already queued still finishes. Mining, Farming, Energy, and Steel and metals run sites instead of lines: switching to one of those takes the lines down, with their build and robot costs back in the treasury and queued materials back in the warehouse."), save, cmsg);
       // Hand control to another shareholder (two clicks, so it can't happen by accident)
       const heirs = st.top.filter((h) => h.shares > 0 && h.uid !== c.controller && h.uid !== "market" && !String(h.uid).startsWith("bot-"));
       const ho = mk("div", "co-sec");

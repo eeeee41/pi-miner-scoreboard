@@ -402,6 +402,24 @@ const Factory = (() => {
     return 0;
   }
 
+  // Companies whose industry runs sites (mines, fields, plants, furnaces) don't keep production lines.
+  // Any left over are taken down: what was paid to build them and fit robots goes back to the treasury,
+  // materials still queued go back to the warehouse, and workers on them are free for a site.
+  function retireLines(f, c, treasury) {
+    if (!siteInd(c.industry) || !f.lines.length) return treasury;
+    let refund = 0;
+    for (const l of f.lines) {
+      refund += LINE_COST;
+      for (let t = 1; t <= (l.robots || 0); t++) refund += ROBOTS[t].cost;
+      if (l.queued) for (const [k, q] of Object.entries(l.inputs || inputsFor(l.recipe, f.research))) f.inventory[k] = (f.inventory[k] || 0) + q * l.queued;
+      for (const p of f.staff) if (p.line === l.id) p.line = null;
+    }
+    const n = f.lines.length;
+    f.lines = [];
+    f.news = [`${c.industry} companies run sites instead of production lines, so ${n === 1 ? "the old line was" : `the ${n} old lines were`} taken down: ${fmtCash(refund)} back to the treasury, and anything queued back to the warehouse.`, ...(f.news || [])].slice(0, 8);
+    return treasury + refund;
+  }
+
   // Lines stopped for unpaid upkeep pick up where they left off once the treasury has money
   function resume(f, now, treasury) {
     if (treasury <= 0) return;
@@ -672,6 +690,7 @@ const Factory = (() => {
       const credits = new Map();
       treasury = payroll(f, now, treasury, credits);
       settleJobs(f, now, jobs);                 // anyone who just quit for lack of pay
+      treasury = retireLines(f, c, treasury);
       resume(f, now, treasury);
       const ctx = { contracts, created: [], sets: [], buyPower: money.buyPower };
       const res = change ? change(f, treasury, now, c, ctx) || {} : {};
@@ -723,6 +742,7 @@ const Factory = (() => {
   }, undefined, { fee: "Selling to wholesalers" });
 
   const buildLine = () => act((f, treasury, now, c) => {
+    if (siteInd(c.industry)) throw new Error(`${c.industry} companies run sites, not production lines.`);
     if (f.lines.length >= MAX_LINES) throw new Error(`A company can have at most ${MAX_LINES} production lines.`);
     if (treasury < LINE_COST) throw new Error(`A line costs ${fmtCash(LINE_COST)}; the treasury has ${fmtCash(treasury)}.`);
     f.lines.push({ id: Date.now().toString(36), recipe: recipesFor(c.industry)[0] || "steel", queued: 0, startedAt: null, made: 0 });
@@ -975,7 +995,7 @@ const Factory = (() => {
     if (sitesMode) Sites.render(g("fSites"), f, can, c, run);
     g("fBuild").classList.toggle("hidden", !can || sitesMode || f.lines.length >= MAX_LINES);
     g("fBuild").textContent = `Build a production line (${fmtCash(LINE_COST)})`;
-    if (sitesMode && !f.lines.length) { box.replaceChildren(); return; }
+    if (sitesMode) { box.replaceChildren(); return; }   // leftover lines are taken down at the next save
     if (!f.lines.length) {
       box.replaceChildren(mk("div", "empty", can ? "No lines yet. Build one to start making things." : "This company hasn't built any lines."));
       return;
