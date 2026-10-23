@@ -33,7 +33,8 @@
                  to everyday buyers as it's made (after covering what miners
                  bought from the company). Coal and gas plants burn fuel from
                  the warehouse; solar farms need none but only make power
-                 while the sun is up (06:00–18:00 UTC), less when it's cloudy.
+                 while the sun is up (6 am to 6 pm Pacific time), less when it's
+                 cloudy.
      well        { kind: "well", r0, builtAt, frackedAt, carry, lastAt, made }
                  An oil well pumps crude oil into the warehouse. It starts
                  strong and declines 4% an hour, levelling off at 15% of
@@ -153,8 +154,16 @@ const Sites = (() => {
   }
   // Energy
   const fuelPer = (type, research) => (research.boiler ? PLANTS[type].perR : PLANTS[type].per);
-  // How strong the sun is at time t (0 at night, 1 at noon UTC), and whether that hour is cloudy
-  function sunAt(t) { const h = (t / HOUR) % 24; return h > 6 && h < 18 ? Math.sin((Math.PI * (h - 6)) / 12) : 0; }
+  // The sun follows Pacific time (daylight saving included), the same for every player
+  const PACIFIC = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "numeric", hourCycle: "h23" });
+  // Hour of the day in Pacific time at t, with minutes as a fraction (13.5 = 1:30 pm)
+  function pacificHour(t) {
+    const parts = PACIFIC.formatToParts(new Date(t));
+    const h = Number(parts.find((x) => x.type === "hour").value) % 24, m = Number(parts.find((x) => x.type === "minute").value);
+    return h + m / 60 + (t % 60000) / HOUR;
+  }
+  // How strong the sun is at time t (0 at night, 1 at noon Pacific), and whether that hour is cloudy
+  function sunAt(t) { const h = pacificHour(t); return h > 6 && h < 18 ? Math.sin((Math.PI * (h - 6)) / 12) : 0; }
   const cloudy = (s, t) => roll(`${s.id}:${Math.floor(t / HOUR)}`) < 0.3;
   const solarRate = (s, t, research) => PLANTS.solar.peak * (research.panels ? 1.5 : 1) * sunAt(t) * (cloudy(s, t) ? 0.5 : 1);
   const wellK = (research) => WELL.decline * (research.eor ? 0.5 : 1);
@@ -622,8 +631,8 @@ const Sites = (() => {
     if (!s.on) text = "Switched off: making nothing.";
     else if (s.type === "solar") {
       const now = solarRate(s, t, research) * crew;
-      const sunrise = sunAt(t) ? "" : ` · the sun rises in ${Factory.fmtDur(((((6 - ((t / HOUR) % 24)) + 24) % 24) * HOUR) / 1000)}`;
-      text = `${Math.round(now).toLocaleString()} MWh an hour right now${sunAt(t) ? (cloudy(s, t) ? " (cloudy: half as much)" : " (clear skies)") : " (night)"}${sunrise} · up to ${Math.round(p.peak * (research.panels ? 1.5 : 1) * crew).toLocaleString()} at noon UTC`;
+      const sunrise = sunAt(t) ? "" : ` · the sun rises at 6 am Pacific, in ${Factory.fmtDur(((((6 - pacificHour(t)) + 24) % 24) * HOUR) / 1000)}`;
+      text = `${Math.round(now).toLocaleString()} MWh an hour right now${sunAt(t) ? (cloudy(s, t) ? " (cloudy: half as much)" : " (clear skies)") : " (night)"}${sunrise} · up to ${Math.round(p.peak * (research.panels ? 1.5 : 1) * crew).toLocaleString()} at noon Pacific time`;
     } else {
       const per = fuelPer(s.type, research), rate = p.rate * crew, fuel = f.inventory[p.fuel] || 0;
       const lasts = fuel / (per * rate);
@@ -767,7 +776,7 @@ const Sites = (() => {
     if (industry === "Energy") return [
       p(`Oil well (${fmtCash(COST.well)}, ${fmtCash(UPKEEP.well)}/hour): pumps ${WELL.r0[0]}–${WELL.r0[1]} barrels of crude an hour to start, declining ${WELL.decline * 100}% an hour until it levels off at ${WELL.floor * 100}% of that.`),
       p(`Refinery (${fmtCash(COST.refinery)}, ${fmtCash(UPKEEP.refinery)}/hour): takes ${REFINERY.rate} barrels an hour. Fuel mode: every 4 barrels make 2 gasoline and 1 plastic. Chemicals mode: 1 gasoline and 4 plastic. Gasoline sells to everyday buyers as it's made; plastic goes to the warehouse.`),
-      p(`Power plants sell electricity around the clock, to miners who bought from you first (set a tariff on the Stocks tab), then to everyday buyers. Coal plant (${fmtCash(COST.coal)}, ${fmtCash(UPKEEP.coal)}/hour): ${PLANTS.coal.rate} MWh an hour, burning 2 coal per MWh. Gas plant (${fmtCash(COST.gas)}, ${fmtCash(UPKEEP.gas)}/hour): ${PLANTS.gas.rate} MWh an hour, 1 barrel of oil per MWh. Solar farm (${fmtCash(COST.solar)}, ${fmtCash(UPKEEP.solar)}/hour): no fuel, up to ${PLANTS.solar.peak} MWh an hour at noon UTC, nothing at night, half on cloudy hours.`),
+      p(`Power plants sell electricity around the clock, to miners who bought from you first (set a tariff on the Stocks tab), then to everyday buyers. Coal plant (${fmtCash(COST.coal)}, ${fmtCash(UPKEEP.coal)}/hour): ${PLANTS.coal.rate} MWh an hour, burning 2 coal per MWh. Gas plant (${fmtCash(COST.gas)}, ${fmtCash(UPKEEP.gas)}/hour): ${PLANTS.gas.rate} MWh an hour, 1 barrel of oil per MWh. Solar farm (${fmtCash(COST.solar)}, ${fmtCash(UPKEEP.solar)}/hour): no fuel, up to ${PLANTS.solar.peak} MWh an hour at noon Pacific time, nothing from 6 pm to 6 am, half on cloudy hours.`),
       p(`You can also survey for coal (${fmtCash(COST.survey)}) and mine it yourself. Switch plants and refineries off when prices are too low to cover their fuel.`)];
     if (industry === "Steel and metals") return [
       p(`Furnaces work in batches: load one, the materials are taken at once, and the whole batch comes out together. Tick "Keep going" to start the same batch again whenever the materials are in the warehouse.`),
@@ -792,5 +801,5 @@ const Sites = (() => {
   })[ind] || "";
 
   return { INDUSTRIES, RESEARCH, isSiteIndustry, settle, upkeepOf, pauseAll, resumeAll, render, guide, builds, close, closeButton, sells, sellsFor, powerSuppliers, title, blurb,
-    CROPS, ORES, COST, UPKEEP, PLANTS, WELL, REFINERY, FURNACES, SURVEYS, MAX_SITES, sunAt };
+    CROPS, ORES, COST, UPKEEP, PLANTS, WELL, REFINERY, FURNACES, SURVEYS, MAX_SITES, sunAt, pacificHour };
 })();
