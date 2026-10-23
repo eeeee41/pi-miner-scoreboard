@@ -138,14 +138,26 @@ const Rig = (() => {
     } else parts.push(mk("p", "co-note", "You have the biggest rig: every block you mine pays the full reward."));
     // Power supplier
     const sel = mk("select"); sel.id = "rigPower";
+    // Every Energy company, so nobody wonders where one went: those that can't take customers are greyed out, with why
+    const energy = (typeof Factory !== "undefined" ? Factory.companies() : []).filter((c) => c.industry === "Energy")
+      .sort((a, b) => (a.tariff || Infinity) - (b.tariff || Infinity));
+    const why = (c) => !(c.tariff > 0) ? "not selling to miners: no tariff set on the Stocks tab"
+      : (c.powerOwed || 0) >= MAX_OWED_KWH ? `full: ${Math.round((c.powerOwed || 0) / 1000).toLocaleString()} MWh still to deliver (limit ${MAX_OWED_KWH / 1000})` : "";
     const opts = [Object.assign(mk("option", null, `The grid · ${fmtCash(GRID_TARIFF)}/MWh`), { value: "" }),
-      ...suppliers().map((c) => Object.assign(mk("option", null, `${c.ticker} · ${c.name} · ${fmtCash(c.tariff)}/MWh`), { value: c.ticker }))];
+      ...energy.map((c) => {
+        const w = why(c), o = mk("option", null, `${c.ticker} · ${c.name} · ${w || `${fmtCash(c.tariff)}/MWh`}`);
+        o.value = c.ticker; o.disabled = !!w;
+        return o;
+      })];
     sel.replaceChildren(...opts);
     sel.value = supplier() ? supplier().ticker : "";
     sel.addEventListener("change", () => run(() => choose(sel.value)));
     const l = mk("label", "field"); l.htmlFor = "rigPower"; l.append(mk("span", null, "Buy electricity from"), sel);
     const row = mk("div", "co-form"); row.append(l);
     parts.push(row, mk("p", "co-note", "Power is billed every 5 minutes while you mine, with no Pi fee. Energy companies can sell it cheaper than the grid; their plants have to produce what they sell."));
+    const picked = st.wallet && st.wallet.powerFrom && energy.find((c) => c.ticker === st.wallet.powerFrom);
+    if (picked && why(picked)) parts.push(mk("p", "co-note neg", `You picked ${picked.ticker}, but it's ${why(picked)}, so you're on the grid until that changes.`));
+    if (!energy.length) parts.push(mk("p", "co-note", "No Energy companies yet. Found one (or switch a company to Energy) and set a tariff on the Stocks tab to sell power to miners."));
     g("rigInfo").replaceChildren(...parts);
   }
   async function run(fn) {
